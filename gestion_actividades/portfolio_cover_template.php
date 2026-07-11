@@ -20,7 +20,7 @@ $PAGE->set_heading('Portada del portafolio');
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading('Portada editable del portafolio');
-echo html_writer::tag('p', 'Esta portada se usará en todos los PDF de portafolio. Puedes editar el texto y usar las variables automáticas.', ['class' => 'alert alert-info']);
+echo html_writer::tag('p', 'Esta portada se usará en todos los PDF de portafolio y se imprimirá sobre la misma plantilla visual UCV usada para los certificados. Puedes editar el texto y usar las variables automáticas.', ['class' => 'alert alert-info']);
 
 echo html_writer::start_tag('form', ['method' => 'post']);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);
