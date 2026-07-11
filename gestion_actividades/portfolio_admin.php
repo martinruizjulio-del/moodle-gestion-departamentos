@@ -2,6 +2,7 @@
 require_once(__DIR__ . '/../../config.php');
 
 use local_gestion_actividades\local\manager;
+use local_gestion_actividades\local\portfolio_pdf;
 use local_gestion_actividades\local\portfolio_typeb;
 
 require_login();
@@ -32,6 +33,15 @@ function local_ga_admin_badge(string $status): string {
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading('Portafolio de certificados - gestor');
+
+$pendingcount = portfolio_typeb::count_pending();
+if ($pendingcount > 0) {
+    echo html_writer::div(
+        '<strong>Atención:</strong> hay ' . (int)$pendingcount . ' certificado(s) Tipo B pendiente(s) de validar. ' .
+        html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['status' => 'pending']), 'Ver pendientes', ['class' => 'btn btn-warning btn-sm ml-2']),
+        'alert alert-warning'
+    );
+}
 
 echo html_writer::start_div('mb-3');
 echo html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), 'Panel de gestión', ['class' => 'btn btn-secondary']);
@@ -77,10 +87,10 @@ if ($userid > 0) {
 
 if ($selecteduser) {
     echo html_writer::tag('h2', 'Portafolio de ' . fullname($selecteduser));
-    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']), 'mb-3');
-    $typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$selecteduser->id) : 0.0;
+    $typeahours = portfolio_pdf::get_typea_hours((int)$selecteduser->id);
     $typebvalidated = portfolio_typeb::total_validated_hours((int)$selecteduser->id);
     echo html_writer::tag('p', 'Horas Tipo A: ' . round((float)$typeahours, 2) . ' h · Horas Tipo B validadas: ' . round((float)$typebvalidated, 2) . ' h · Total reconocido: ' . round((float)$typeahours + (float)$typebvalidated, 2) . ' h', ['class' => 'alert alert-info']);
+    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']), 'mb-3');
 
     echo html_writer::tag('h3', 'Talleres Tipo A');
     $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$selecteduser->id) : [];
