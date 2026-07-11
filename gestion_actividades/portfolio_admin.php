@@ -37,6 +37,10 @@ echo html_writer::start_div('mb-3');
 echo html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), 'Panel de gestión', ['class' => 'btn btn-secondary']);
 echo ' ';
 echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Mi portafolio', ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_cover_template.php'), 'Editar portada PDF', ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_all.php', ['sesskey' => sesskey()]), 'Descargar todos los portafolios', ['class' => 'btn btn-primary']);
 echo html_writer::end_div();
 
 echo html_writer::start_tag('form', ['method' => 'get', 'class' => 'mb-3']);
@@ -73,6 +77,7 @@ if ($userid > 0) {
 
 if ($selecteduser) {
     echo html_writer::tag('h2', 'Portafolio de ' . fullname($selecteduser));
+    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']), 'mb-3');
     $typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$selecteduser->id) : 0.0;
     $typebvalidated = portfolio_typeb::total_validated_hours((int)$selecteduser->id);
     echo html_writer::tag('p', 'Horas Tipo A: ' . round((float)$typeahours, 2) . ' h · Horas Tipo B validadas: ' . round((float)$typebvalidated, 2) . ' h · Total reconocido: ' . round((float)$typeahours + (float)$typebvalidated, 2) . ' h', ['class' => 'alert alert-info']);
