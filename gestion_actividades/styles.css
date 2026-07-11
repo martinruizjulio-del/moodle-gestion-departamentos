@@ -1,0 +1,11 @@
+.local-ga-kpi {
+    border-radius: .75rem;
+    border: 1px solid #dfe8d8;
+    background: #f7faf5;
+}
+.local-ga-soft-title {
+    color: #2b4b1e;
+}
+.local-ga-actions .btn {
+    margin: 0 .25rem .35rem 0;
+}
