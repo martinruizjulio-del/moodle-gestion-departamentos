@@ -100,35 +100,27 @@ class portfolio_pdf {
         $pdf->SetXY(25, 35);
     }
 
-    public static function annex_rows(array $typeacerts, array $typebcerts): array {
-        $rows = [];
-        $n = 1;
-        foreach ($typeacerts as $c) {
-            $rows[] = (object)[
-                'number' => $n++,
-                'type' => 'Tipo A',
-                'title' => trim(($c->workshopcode ?? '') . ' - ' . ($c->workshopname ?? '')),
-                'date' => (int)($c->timeissued ?? 0),
-                'hours' => isset($c->hours) ? (float)$c->hours : 0.0,
-                'status' => 'Generado',
-            ];
+    public static function typeb_status_label(string $status): string {
+        if ($status === 'validated') {
+            return 'Validado';
         }
-        foreach ($typebcerts as $c) {
-            $status = (string)($c->status ?? '');
-            if ($status === 'validated') { $statuslabel = 'Validado'; }
-            else if ($status === 'pending') { $statuslabel = 'Pendiente'; }
-            else if ($status === 'rejected') { $statuslabel = 'Rechazado'; }
-            else { $statuslabel = $status; }
-            $rows[] = (object)[
-                'number' => $n++,
-                'type' => 'Tipo B',
-                'title' => (string)$c->activityname,
-                'date' => (int)($c->activitydate ?? 0),
-                'hours' => isset($c->hours) ? (float)$c->hours : 0.0,
-                'status' => $statuslabel,
-            ];
+        if ($status === 'pending') {
+            return 'Pendiente';
         }
-        return $rows;
+        if ($status === 'rejected') {
+            return 'Rechazado';
+        }
+        return $status;
+    }
+
+    private static function write_certificate_card(\pdf $pdf, string $title, array $rows): void {
+        $html = '<div style="border:1px solid #d8d8d8;border-radius:6px;padding:9px 10px;margin-bottom:8px;">';
+        $html .= '<h3 style="font-size:12.5pt;color:#2b4b1e;margin:0 0 5px 0;">' . s($title) . '</h3>';
+        foreach ($rows as $label => $value) {
+            $html .= '<p style="font-size:10.5pt;margin:2px 0;"><strong>' . s($label) . ':</strong> ' . s((string)$value) . '</p>';
+        }
+        $html .= '</div>';
+        $pdf->writeHTML($html, true, false, true, false, '');
     }
 
     public static function render_pdf_string(int $userid): string {
@@ -143,14 +135,13 @@ class portfolio_pdf {
         $typeahours = self::get_typea_hours($userid);
         $typebhours = portfolio_typeb::total_validated_hours($userid);
         $course = self::detect_course_label($typeacerts, $typebcerts);
-        $annexes = self::annex_rows($typeacerts, $typebcerts);
 
         $pdf = new \pdf('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Gestion_actividades');
         $pdf->SetAuthor('Gestion_actividades');
         $pdf->SetTitle('Portafolio de certificados - ' . fullname($user));
-        $pdf->SetMargins(22, 30, 22);
-        $pdf->SetAutoPageBreak(true, 22);
+        $pdf->SetMargins(25, 35, 25);
+        $pdf->SetAutoPageBreak(true, 24);
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
 
@@ -162,29 +153,29 @@ class portfolio_pdf {
         $pdf->SetFont('helvetica', 'B', 20);
         $pdf->writeHTML('<h1 style="color:#2b4b1e;">Índice</h1>', true, false, true, false, '');
         $pdf->SetFont('helvetica', '', 12);
-        $pdf->writeHTML('<ol style="font-size:12pt;line-height:1.7;"><li>Portada</li><li>Resumen de horas</li><li>Certificados de Talleres Tipo A</li><li>Certificados de Talleres Tipo B</li><li>Anexos documentales</li></ol><p style="color:#555;">Los anexos se relacionan al final del documento y se entregan como PDFs originales en la descarga completa en ZIP, ordenados por tipo y fecha.</p>', true, false, true, false, '');
+        $pdf->writeHTML('<ol style="font-size:12pt;line-height:1.7;"><li>Portada</li><li>Resumen de horas</li><li>Certificados de Talleres Tipo A</li><li>Certificados de Talleres Tipo B</li></ol>', true, false, true, false, '');
 
         self::add_ucv_page($pdf);
         $pdf->SetFont('helvetica', 'B', 18);
         $pdf->writeHTML('<h1 style="color:#2b4b1e;">Resumen de horas</h1>', true, false, true, false, '');
-        $summary = '<table border="1" cellpadding="6">' .
-            '<tr style="background-color:#f2f2f2;font-weight:bold;"><td>Tipo</td><td>Horas reconocidas</td></tr>' .
-            '<tr><td>Talleres Tipo A</td><td>' . self::format_hours($typeahours) . '</td></tr>' .
-            '<tr><td>Talleres Tipo B validados</td><td>' . self::format_hours($typebhours) . '</td></tr>' .
-            '<tr><td><strong>Total reconocido</strong></td><td><strong>' . self::format_hours($typeahours + $typebhours) . '</strong></td></tr>' .
-            '</table>';
         $pdf->SetFont('helvetica', '', 11);
-        $pdf->writeHTML($summary, true, false, true, false, '');
+        self::write_certificate_card($pdf, 'Horas reconocidas', [
+            'Talleres Tipo A' => self::format_hours($typeahours),
+            'Talleres Tipo B validados' => self::format_hours($typebhours),
+            'Total reconocido' => self::format_hours($typeahours + $typebhours),
+        ]);
 
         self::add_ucv_page($pdf);
         $pdf->writeHTML('<h1 style="color:#2b4b1e;">Certificados de Talleres Tipo A</h1>', true, false, true, false, '');
         if ($typeacerts) {
-            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;"><td>Taller</td><td>Curso</td><td>Horas</td><td>Fecha emisión</td></tr>';
             foreach ($typeacerts as $c) {
-                $html .= '<tr><td>' . s(($c->workshopcode ?? '') . ' - ' . ($c->workshopname ?? '')) . '</td><td>' . s($c->coursename ?? '') . '</td><td>' . (!empty($c->hours) ? self::format_hours((float)$c->hours) : '-') . '</td><td>' . userdate((int)$c->timeissued, get_string('strftimedatefullshort', 'langconfig')) . '</td></tr>';
+                self::write_certificate_card($pdf, trim(($c->workshopcode ?? '') . ' - ' . ($c->workshopname ?? '')), [
+                    'Curso' => $c->coursename ?? '-',
+                    'Horas' => !empty($c->hours) ? self::format_hours((float)$c->hours) : '-',
+                    'Fecha de emisión' => !empty($c->timeissued) ? userdate((int)$c->timeissued, get_string('strftimedatefullshort', 'langconfig')) : '-',
+                    'Estado' => 'Generado',
+                ]);
             }
-            $html .= '</table>';
-            $pdf->writeHTML($html, true, false, true, false, '');
         } else {
             $pdf->writeHTML('<p>No constan certificados Tipo A generados.</p>', true, false, true, false, '');
         }
@@ -192,32 +183,17 @@ class portfolio_pdf {
         self::add_ucv_page($pdf);
         $pdf->writeHTML('<h1 style="color:#2b4b1e;">Certificados de Talleres Tipo B</h1>', true, false, true, false, '');
         if ($typebcerts) {
-            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;"><td>Actividad</td><td>Fecha</td><td>Horas</td><td>Estado</td></tr>';
             foreach ($typebcerts as $c) {
-                $status = (string)$c->status;
-                if ($status === 'validated') { $statuslabel = 'Validado'; }
-                else if ($status === 'pending') { $statuslabel = 'Pendiente'; }
-                else if ($status === 'rejected') { $statuslabel = 'Rechazado'; }
-                else { $statuslabel = $status; }
-                $html .= '<tr><td>' . s($c->activityname) . '</td><td>' . userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) . '</td><td>' . self::format_hours((float)$c->hours) . '</td><td>' . s($statuslabel) . '</td></tr>';
+                self::write_certificate_card($pdf, (string)$c->activityname, [
+                    'Fecha' => !empty($c->activitydate) ? userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) : '-',
+                    'Horas' => self::format_hours((float)$c->hours),
+                    'Estado' => self::typeb_status_label((string)$c->status),
+                    'Declaración normativa' => !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
+                    'Comentario' => !empty($c->reviewcomment) ? (string)$c->reviewcomment : '-',
+                ]);
             }
-            $html .= '</table>';
-            $pdf->writeHTML($html, true, false, true, false, '');
         } else {
             $pdf->writeHTML('<p>No constan certificados Tipo B subidos.</p>', true, false, true, false, '');
-        }
-
-        self::add_ucv_page($pdf);
-        $pdf->writeHTML('<h1 style="color:#2b4b1e;">Anexos documentales</h1>', true, false, true, false, '');
-        if ($annexes) {
-            $html = '<p>Relación de PDFs originales incluidos en la descarga completa del expediente.</p><table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;"><td>Anexo</td><td>Tipo</td><td>Documento</td><td>Fecha</td><td>Horas</td><td>Estado</td></tr>';
-            foreach ($annexes as $a) {
-                $html .= '<tr><td>' . (int)$a->number . '</td><td>' . s($a->type) . '</td><td>' . s($a->title) . '</td><td>' . (!empty($a->date) ? userdate((int)$a->date, get_string('strftimedatefullshort', 'langconfig')) : '-') . '</td><td>' . self::format_hours((float)$a->hours) . '</td><td>' . s($a->status) . '</td></tr>';
-            }
-            $html .= '</table>';
-            $pdf->writeHTML($html, true, false, true, false, '');
-        } else {
-            $pdf->writeHTML('<p>No constan anexos documentales.</p>', true, false, true, false, '');
         }
 
         $pdf->writeHTML('<p style="color:#666;font-size:9pt;">Documento generado automáticamente por Gestion_actividades.</p>', true, false, true, false, '');
