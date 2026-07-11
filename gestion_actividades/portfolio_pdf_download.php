@@ -21,4 +21,17 @@ $user = $DB->get_record('user', ['id' => $userid, 'deleted' => 0], '*', MUST_EXI
 $pdf = portfolio_pdf::render_pdf_string((int)$userid);
 $filename = portfolio_pdf::filename_for_user($user);
 
-send_file($pdf, $filename, 0, 0, true, true, 'application/pdf');
+\core\session\manager::write_close();
+
+while (ob_get_level()) {
+    ob_end_clean();
+}
+
+header('Content-Type: application/pdf');
+header('Content-Disposition: attachment; filename="' . rawurlencode($filename) . '"');
+header('Content-Length: ' . strlen($pdf));
+header('Cache-Control: private, max-age=0, must-revalidate');
+header('Pragma: public');
+
+echo $pdf;
+exit;
