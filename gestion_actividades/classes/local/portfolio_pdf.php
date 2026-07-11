@@ -25,10 +25,22 @@ class portfolio_pdf {
     }
 
     public static function get_typea_hours(int $userid): float {
+        $hours = 0.0;
         if (class_exists('local_gestion_actividades\\local\\manager') && method_exists(manager::class, 'get_student_total_hours')) {
-            return (float)manager::get_student_total_hours($userid);
+            $hours = (float)manager::get_student_total_hours($userid);
         }
-        return 0.0;
+        $certsum = self::sum_typea_certificate_hours($userid);
+        return max($hours, $certsum);
+    }
+
+    public static function sum_typea_certificate_hours(int $userid): float {
+        $total = 0.0;
+        foreach (self::get_typea_certificates($userid) as $cert) {
+            if (isset($cert->hours) && $cert->hours !== null && $cert->hours !== '') {
+                $total += (float)$cert->hours;
+            }
+        }
+        return $total;
     }
 
     public static function get_typea_certificates(int $userid): array {
