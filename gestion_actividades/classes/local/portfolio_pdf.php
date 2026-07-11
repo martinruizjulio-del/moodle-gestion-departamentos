@@ -5,11 +5,11 @@ defined('MOODLE_INTERNAL') || die();
 
 class portfolio_pdf {
     public static function default_cover_template(): string {
-        return '<h1 style="text-align:center;color:#2b4b1e;">Portafolio de certificados</h1>' .
-               '<h2 style="text-align:center;">{alumno}</h2>' .
+        return '<h1 style="text-align:center;color:#2b4b1e;font-size:26pt;">Portafolio de certificados</h1>' .
+               '<h2 style="text-align:center;color:#222;font-size:18pt;">{alumno}</h2>' .
                '<p style="text-align:center;font-size:13pt;">Curso: <strong>{curso}</strong></p>' .
-               '<p style="text-align:center;">Horas Tipo A: <strong>{horas_tipo_a}</strong> · Horas Tipo B: <strong>{horas_tipo_b}</strong> · Total: <strong>{horas_total}</strong></p>' .
-               '<p style="text-align:center;color:#666;">Fecha de emisión: {fecha_emision}</p>';
+               '<p style="text-align:center;font-size:12pt;line-height:1.6;">Horas Tipo A: <strong>{horas_tipo_a}</strong><br>Horas Tipo B validadas: <strong>{horas_tipo_b}</strong><br>Total reconocido: <strong>{horas_total}</strong></p>' .
+               '<p style="text-align:center;color:#666;font-size:10pt;">Fecha de emisión: {fecha_emision}</p>';
     }
 
     public static function get_cover_template(): string {
@@ -75,6 +75,17 @@ class portfolio_pdf {
         return get_string('site');
     }
 
+    public static function add_ucv_background(\pdf $pdf): void {
+        $bg = dirname(__DIR__, 2) . '/pix/certificate_ucv_bg.jpg';
+        if (file_exists($bg)) {
+            $pdf->Image($bg, 0, 0, 210, 297, '', '', '', false, 300, '', false, false, 0);
+        }
+    }
+
+    public static function section_title(string $title): string {
+        return '<h1 style="color:#2b4b1e;font-size:18pt;margin-bottom:12px;">' . s($title) . '</h1>';
+    }
+
     public static function render_pdf_string(int $userid): string {
         global $DB, $CFG;
         require_once($CFG->libdir . '/pdflib.php');
@@ -98,14 +109,16 @@ class portfolio_pdf {
         $pdf->setPrintFooter(false);
 
         $pdf->AddPage();
+        self::add_ucv_background($pdf);
         $cover = self::replace_cover_placeholders(self::get_cover_template(), $user, $course, $typeahours, $typebhours);
-        $pdf->writeHTML('<div style="margin-top:55mm;">' . $cover . '</div>', true, false, true, false, '');
+        $pdf->writeHTML('<div style="margin-top:58mm;padding-left:10mm;padding-right:10mm;">' . $cover . '</div>', true, false, true, false, '');
 
         $pdf->AddPage();
+        self::add_ucv_background($pdf);
         $pdf->SetFont('helvetica', 'B', 18);
-        $pdf->writeHTML('<h1>Resumen de horas</h1>', true, false, true, false, '');
+        $pdf->writeHTML(self::section_title('Resumen de horas'), true, false, true, false, '');
         $summary = '<table border="1" cellpadding="6">' .
-            '<tr style="background-color:#f2f2f2;font-weight:bold;"><td>Tipo</td><td>Horas reconocidas</td></tr>' .
+            '<tr style="background-color:#f2f2f2;font-weight:bold;color:#2b4b1e;"><td>Tipo</td><td>Horas reconocidas</td></tr>' .
             '<tr><td>Talleres Tipo A</td><td>' . self::format_hours($typeahours) . '</td></tr>' .
             '<tr><td>Talleres Tipo B validados</td><td>' . self::format_hours($typebhours) . '</td></tr>' .
             '<tr><td><strong>Total reconocido</strong></td><td><strong>' . self::format_hours($typeahours + $typebhours) . '</strong></td></tr>' .
@@ -113,9 +126,9 @@ class portfolio_pdf {
         $pdf->SetFont('helvetica', '', 11);
         $pdf->writeHTML($summary, true, false, true, false, '');
 
-        $pdf->writeHTML('<h2>Talleres Tipo A</h2>', true, false, true, false, '');
+        $pdf->writeHTML('<h2 style="color:#2b4b1e;">Talleres Tipo A</h2>', true, false, true, false, '');
         if ($typeacerts) {
-            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;"><td>Taller</td><td>Curso</td><td>Horas</td><td>Fecha emisión</td></tr>';
+            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;color:#2b4b1e;"><td>Taller</td><td>Curso</td><td>Horas</td><td>Fecha emisión</td></tr>';
             foreach ($typeacerts as $c) {
                 $html .= '<tr><td>' . s(($c->workshopcode ?? '') . ' - ' . ($c->workshopname ?? '')) . '</td><td>' . s($c->coursename ?? '') . '</td><td>' . (!empty($c->hours) ? self::format_hours((float)$c->hours) : '-') . '</td><td>' . userdate((int)$c->timeissued, get_string('strftimedatefullshort', 'langconfig')) . '</td></tr>';
             }
@@ -125,9 +138,9 @@ class portfolio_pdf {
             $pdf->writeHTML('<p>No constan certificados Tipo A generados.</p>', true, false, true, false, '');
         }
 
-        $pdf->writeHTML('<h2>Talleres Tipo B</h2>', true, false, true, false, '');
+        $pdf->writeHTML('<h2 style="color:#2b4b1e;">Talleres Tipo B</h2>', true, false, true, false, '');
         if ($typebcerts) {
-            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;"><td>Actividad</td><td>Fecha</td><td>Horas</td><td>Estado</td></tr>';
+            $html = '<table border="1" cellpadding="5"><tr style="background-color:#f2f2f2;font-weight:bold;color:#2b4b1e;"><td>Actividad</td><td>Fecha</td><td>Horas</td><td>Estado</td></tr>';
             foreach ($typebcerts as $c) {
                 $status = (string)$c->status;
                 if ($status === 'validated') { $statuslabel = 'Validado'; }
