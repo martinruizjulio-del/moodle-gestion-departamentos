@@ -103,7 +103,11 @@ if ($selecteduser) {
     }
     $typebvalidated = portfolio_typeb::total_validated_hours((int)$selecteduser->id);
     echo html_writer::tag('p', 'Horas Tipo A: ' . round((float)$typeahours, 2) . ' h · Horas Tipo B validadas: ' . round((float)$typebvalidated, 2) . ' h · Total reconocido: ' . round((float)$typeahours + (float)$typebvalidated, 2) . ' h', ['class' => 'alert alert-info']);
-    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']), 'mb-3');
+    echo html_writer::start_div('mb-3');
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']);
+    echo ' ';
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_package_download.php', ['userid' => $selecteduser->id]), 'Descargar expediente completo ZIP', ['class' => 'btn btn-primary']);
+    echo html_writer::end_div();
 
     echo html_writer::tag('h3', 'Talleres Tipo A');
     if ($typeacerts) {
