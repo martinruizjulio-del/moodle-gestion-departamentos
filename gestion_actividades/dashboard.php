@@ -121,6 +121,18 @@ echo html_writer::div(
     'mb-3'
 );
 
+echo html_writer::tag('h2', 'Portafolio de certificados');
+echo html_writer::start_tag('div', ['class' => 'card mb-3']);
+echo html_writer::start_tag('div', ['class' => 'card-body']);
+echo html_writer::tag('p', 'Consulta y gestión de certificados: Tipo A generado por el sistema y Tipo B preparado para subida futura del alumno.', ['class' => 'card-text']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php'), 'Portafolio gestor', ['class' => 'btn btn-primary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Mi portafolio', ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+echo html_writer::end_tag('div');
+echo html_writer::end_tag('div');
+
 
 echo html_writer::tag('h4', get_string('recommendedflow', 'local_gestion_actividades'));
 echo html_writer::tag('ol',
@@ -130,22 +142,5 @@ echo html_writer::tag('ol',
     html_writer::tag('li', get_string('flow_enrolments', 'local_gestion_actividades')) .
     html_writer::tag('li', get_string('flow_attendance_activity_certificate', 'local_gestion_actividades'))
 );
-
-echo html_writer::tag('h2', get_string('certificates', 'local_gestion_actividades'));
-echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/mycertificates.php'), get_string('mycertificates', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-
-// certificates_dashboard_box_v141
-echo html_writer::tag('h2', get_string('certificates', 'local_gestion_actividades'));
-echo html_writer::start_tag('div', ['class' => 'card mb-3']);
-echo html_writer::start_tag('div', ['class' => 'card-body']);
-echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/mycertificates.php'), get_string('mycertificates', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-echo html_writer::tag('p', get_string('certificates_dashboard_help', 'local_gestion_actividades'), ['class' => 'text-muted mt-2']);
-echo html_writer::end_tag('div');
-echo html_writer::end_tag('div');
-
 
 echo $OUTPUT->footer();
