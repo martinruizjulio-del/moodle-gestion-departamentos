@@ -21,6 +21,31 @@ if (!manager::can_manage_workshop($course, (int)$USER->id)) {
 $edition = manager::get_primary_workshop_edition($id);
 $action = optional_param('action', '', PARAM_ALPHA);
 
+function local_ga_teacher_valid_required_cm(int $cmid, int $courseid): ?stdClass {
+    global $DB;
+    if ($cmid <= 0) {
+        return null;
+    }
+    $sql = "SELECT cm.id, cm.course, cm.instance, cm.module, cm.deletioninprogress, m.name AS modname
+              FROM {course_modules} cm
+              JOIN {modules} m ON m.id = cm.module
+             WHERE cm.id = :cmid";
+    $cm = $DB->get_record_sql($sql, ['cmid' => $cmid]);
+    if (!$cm || (int)$cm->course !== (int)$courseid || !empty($cm->deletioninprogress)) {
+        return null;
+    }
+    if (!in_array($cm->modname, ['assign', 'quiz'], true)) {
+        return null;
+    }
+    if (!$DB->get_manager()->table_exists(new xmldb_table($cm->modname))) {
+        return null;
+    }
+    if (!$DB->record_exists($cm->modname, ['id' => (int)$cm->instance])) {
+        return null;
+    }
+    return $cm;
+}
+
 if ($action === 'complete' && $edition && confirm_sesskey()) {
     manager::mark_edition_completed((int)$edition->id, (int)$USER->id);
     redirect(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $id]), get_string('workshopmarkedcompleted', 'local_gestion_actividades'));
@@ -33,9 +58,8 @@ $PAGE->set_title(get_string('teacherworkshopview', 'local_gestion_actividades'))
 $PAGE->set_heading(format_string($course->fullname));
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), '← Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), '');
 echo $OUTPUT->heading(get_string('teacherworkshopview', 'local_gestion_actividades') . ': ' . format_string($workshop->code . ' - ' . $workshop->name));
-
-
 
 // certificates_top_manager_box_v141
 if (!empty($edition)) {
@@ -54,11 +78,13 @@ if (!empty($edition)) {
         ['class' => 'btn btn-secondary']
     );
     echo ' ';
-    echo html_writer::link(
-        new moodle_url('/local/gestion_actividades/certificate_template.php'),
-        get_string('certificatetemplate', 'local_gestion_actividades'),
-        ['class' => 'btn btn-secondary']
-    );
+    if (has_capability('local/gestion_actividades:manage', context_system::instance())) {
+        echo html_writer::link(
+            new moodle_url('/local/gestion_actividades/certificate_template.php'),
+            get_string('certificatetemplate', 'local_gestion_actividades'),
+            ['class' => 'btn btn-secondary']
+        );
+    }
     echo html_writer::tag('p', get_string('certificates_visible_help', 'local_gestion_actividades'), ['class' => 'text-muted mt-2']);
     echo html_writer::end_tag('div');
     echo html_writer::end_tag('div');
@@ -103,38 +129,22 @@ if ($edition && empty($edition->groupid)) {
     echo $OUTPUT->notification(get_string('requiredactivitynogroupwarning', 'local_gestion_actividades'), 'warning');
 }
 if ($edition && !empty($edition->requiredcmid)) {
-    try {
-        $modname = manager::get_modname_from_cmid((int)$edition->requiredcmid);
-        if ($modname) {
-            $url = new moodle_url('/mod/' . $modname . '/view.php', ['id' => $edition->requiredcmid]);
-            echo html_writer::link($url, get_string('openrequiredactivity', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-        } else {
-            echo html_writer::tag('p', get_string('requiredactivitycleanhelp', 'local_gestion_actividades'), ['class' => 'text-muted']);
-        }
-    } catch (\Throwable $e) {
-        echo html_writer::tag('p', get_string('requiredactivitycleanhelp', 'local_gestion_actividades'), ['class' => 'text-muted']);
+    $requiredcm = local_ga_teacher_valid_required_cm((int)$edition->requiredcmid, (int)$course->id);
+    if ($requiredcm) {
+        echo html_writer::link(new moodle_url('/course/modedit.php', ['update' => (int)$requiredcm->id, 'return' => 1]), 'Editar tarea/cuestionario', ['class' => 'btn btn-secondary']);
+        echo ' ';
+        echo html_writer::link(new moodle_url('/mod/' . $requiredcm->modname . '/view.php', ['id' => (int)$requiredcm->id]), get_string('openrequiredactivity', 'local_gestion_actividades'), ['class' => 'btn btn-outline-secondary']);
+    } else {
+        echo $OUTPUT->notification('La tarea/cuestionario guardado para este taller ya no es válido o no pertenece a este curso. Entra en “Gestionar actividad requerida” para desvincularlo y seleccionar/crear uno válido.', 'warning');
     }
 } else {
-    $configuredmsg = get_string('requiredactivityconfiguredautocreate', 'local_gestion_actividades');
-    if ($edition) {
-        foreach (['requiredactivitytype', 'activitytype', 'completiontype', 'requiredtype', 'tasktype'] as $field) {
-            if (!empty($edition->$field)) {
-                $configuredmsg = get_string('requiredactivityconfigured', 'local_gestion_actividades') . ': ' . s($edition->$field);
-                break;
-            }
-        }
-        if (!empty($edition->createassignment) || !empty($edition->createquiz) || !empty($edition->autocreateactivity)) {
-            $configuredmsg = get_string('requiredactivityconfigured', 'local_gestion_actividades');
-        }
-    }
     echo html_writer::tag('p', get_string('requiredactivitycleanhelp', 'local_gestion_actividades'), ['class' => 'text-muted']);
 }
 echo ' ';
 if ($edition) {
     echo html_writer::link(new moodle_url('/local/gestion_actividades/task_activity.php', ['id' => $edition->id]), get_string('manageconfiguredactivity', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id, 'sesskey' => sesskey()]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
-
+    echo ' ';
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id, 'sesskey' => sesskey()]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
 }
 echo html_writer::end_tag('div');
 echo html_writer::end_tag('div');
@@ -178,7 +188,6 @@ if ($edition) {
 echo html_writer::end_tag('div');
 echo html_writer::end_tag('div');
 
-
 // certificates_teacher_card_v140
 echo html_writer::start_tag('div', ['class' => 'card mb-3']);
 echo html_writer::start_tag('div', ['class' => 'card-body']);
@@ -187,8 +196,10 @@ if ($edition) {
     echo html_writer::link(new moodle_url('/local/gestion_actividades/generate_certificates.php', ['id' => $edition->id, 'sesskey' => sesskey()]), get_string('generatecertificates', 'local_gestion_actividades'), ['class' => 'btn btn-primary']);
     echo ' ';
     echo html_writer::link(new moodle_url('/local/gestion_actividades/certificates.php', ['editionid' => $edition->id]), get_string('viewgeneratedcertificates', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-    echo ' ';
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+    if (has_capability('local/gestion_actividades:manage', context_system::instance())) {
+        echo ' ';
+        echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+    }
     echo html_writer::tag('p', get_string('certificates_help', 'local_gestion_actividades'), ['class' => 'text-muted mt-2']);
 }
 echo html_writer::end_tag('div');
@@ -207,10 +218,6 @@ if ($edition) {
 }
 
 echo html_writer::tag('p', get_string('finishworkshop_help', 'local_gestion_actividades'));
-if ($edition) {
-    $completeurl = new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $id, 'action' => 'complete', 'sesskey' => sesskey()]);
-    echo html_writer::link($completeurl, get_string('markworkshopcompleted', 'local_gestion_actividades'), ['class' => 'btn btn-danger']);
-}
 echo html_writer::end_tag('div');
 echo html_writer::end_tag('div');
 
