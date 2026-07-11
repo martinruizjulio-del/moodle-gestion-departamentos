@@ -2,6 +2,7 @@
 require_once(__DIR__ . '/../../config.php');
 
 use local_gestion_actividades\local\manager;
+use local_gestion_actividades\local\portfolio_typeb;
 
 require_login();
 $context = context_system::instance();
@@ -14,6 +15,19 @@ $PAGE->set_heading(get_string('title', 'local_gestion_actividades'));
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('dashboard', 'local_gestion_actividades'));
+
+try {
+    $pendingtypeb = portfolio_typeb::count_pending();
+    if ($pendingtypeb > 0) {
+        echo html_writer::div(
+            '<strong>Atención:</strong> hay ' . (int)$pendingtypeb . ' certificado(s) Tipo B pendiente(s) de validar. ' .
+            html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['status' => 'pending']), 'Validar certificados Tipo B', ['class' => 'btn btn-warning btn-sm ml-2']),
+            'alert alert-warning'
+        );
+    }
+} catch (Throwable $e) {
+    // No bloquear el panel si la tabla Tipo B aún no está disponible.
+}
 
 echo html_writer::tag('p', get_string('dashboardintro_seq', 'local_gestion_actividades'), ['class' => 'lead']);
 
@@ -124,10 +138,12 @@ echo html_writer::div(
 echo html_writer::tag('h2', 'Portafolio de certificados');
 echo html_writer::start_tag('div', ['class' => 'card mb-3']);
 echo html_writer::start_tag('div', ['class' => 'card-body']);
-echo html_writer::tag('p', 'Consulta y gestión de certificados: Tipo A generado por el sistema y Tipo B preparado para subida futura del alumno.', ['class' => 'card-text']);
+echo html_writer::tag('p', 'Consulta y gestión de certificados: Tipo A generado por el sistema y Tipo B subido por el alumno.', ['class' => 'card-text']);
 echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php'), 'Portafolio gestor', ['class' => 'btn btn-primary']);
 echo ' ';
 echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Mi portafolio', ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_cover_template.php'), 'Editar portada PDF', ['class' => 'btn btn-secondary']);
 echo ' ';
 echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
 echo html_writer::end_tag('div');
