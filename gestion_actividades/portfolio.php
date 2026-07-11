@@ -27,8 +27,6 @@ function local_ga_portfolio_badge(string $status): string {
 
 $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$USER->id) : [];
 $typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$USER->id) : 0.0;
-
-typeb_start:
 $typebcerts = portfolio_typeb::list_for_user((int)$USER->id);
 $typebvalidatedhours = portfolio_typeb::total_validated_hours((int)$USER->id);
 $typebuploadedhours = portfolio_typeb::total_uploaded_hours((int)$USER->id);
@@ -36,6 +34,16 @@ $totalvalidated = (float)$typeahours + (float)$typebvalidatedhours;
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading('Portafolio de certificados');
+
+echo html_writer::start_div('mb-3');
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php'), 'Descargar mi portafolio en PDF', ['class' => 'btn btn-primary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/typeb_upload.php'), 'Subir certificado Tipo B', ['class' => 'btn btn-secondary']);
+if (has_capability('local/gestion_actividades:manage', $context)) {
+    echo ' ';
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php'), 'Abrir portafolio gestor', ['class' => 'btn btn-secondary']);
+}
+echo html_writer::end_div();
 
 echo html_writer::start_div('row mb-3');
 $cards = [
@@ -69,7 +77,7 @@ if ($typeacerts) {
             !empty($c->hours) ? s((float)$c->hours) . ' h' : '-',
             userdate((int)$c->timeissued),
             local_ga_portfolio_badge($c->status ?: 'generated'),
-            html_writer::link($url, 'Descargar PDF', ['class' => 'btn btn-primary btn-sm']),
+            html_writer::link($url, 'Descargar certificado', ['class' => 'btn btn-primary btn-sm']),
         ];
     }
     echo html_writer::table($table);
@@ -99,16 +107,12 @@ if ($typebcerts) {
             !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
             local_ga_portfolio_badge((string)$c->status),
             !empty($c->reviewcomment) ? s($c->reviewcomment) : '-',
-            html_writer::link($download, 'Descargar PDF', ['class' => 'btn btn-secondary btn-sm']),
+            html_writer::link($download, 'Descargar certificado', ['class' => 'btn btn-secondary btn-sm']),
         ];
     }
     echo html_writer::table($table);
 } else {
     echo $OUTPUT->notification('Todavía no has subido certificados Tipo B.', 'info');
-}
-
-if (has_capability('local/gestion_actividades:manage', $context)) {
-    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php'), 'Abrir portafolio gestor', ['class' => 'btn btn-secondary']), 'mt-3');
 }
 
 echo $OUTPUT->footer();
