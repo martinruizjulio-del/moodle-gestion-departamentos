@@ -1,5 +1,6 @@
 <?php
 require_once(__DIR__ . '/../../config.php');
+require_once($CFG->libdir . '/filelib.php');
 
 use local_gestion_actividades\local\portfolio_pdf;
 use local_gestion_actividades\local\portfolio_typeb;
@@ -55,4 +56,4 @@ $zipname = 'portafolios_certificados_' . date('Ymd_His') . '.zip';
 $zippath = $tempdir . '/' . $zipname;
 $packer->archive_to_pathname($files, $zippath);
 
-send_file($zippath, $zipname, 0, 0, true, true, 'application/zip');
+send_temp_file($zippath, $zipname);
