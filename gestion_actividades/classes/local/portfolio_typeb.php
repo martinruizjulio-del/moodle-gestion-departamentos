@@ -101,6 +101,12 @@ class portfolio_typeb {
         return $DB->get_records_sql($sql, $params);
     }
 
+    public static function count_pending(): int {
+        global $DB;
+        self::ensure_table();
+        return (int)$DB->count_records('local_ga_typeb_certs', ['status' => 'pending']);
+    }
+
     public static function set_status(int $id, string $status, string $comment, int $reviewerid): bool {
         global $DB;
         self::ensure_table();
