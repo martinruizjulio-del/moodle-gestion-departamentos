@@ -1,28 +1,28 @@
 <?php
 require_once(__DIR__ . '/../../config.php');
 
+use local_gestion_actividades\local\manager;
+use local_gestion_actividades\local\portfolio_typeb;
+
 require_login();
 $context = context_system::instance();
 require_capability('local/gestion_actividades:manage', $context);
 
 $q = optional_param('q', '', PARAM_TEXT);
 $userid = optional_param('userid', 0, PARAM_INT);
+$status = optional_param('status', '', PARAM_ALPHA);
 
 $PAGE->set_context($context);
-$PAGE->set_url(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['q' => $q, 'userid' => $userid]));
+$PAGE->set_url(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['q' => $q, 'userid' => $userid, 'status' => $status]));
 $PAGE->set_title('Portafolio de certificados - gestor');
 $PAGE->set_heading('Portafolio de certificados - gestor');
 
-function local_ga_admin_portfolio_status(string $status): string {
-    $status = trim($status);
-    if ($status === '' || $status === 'generated') {
-        return html_writer::span('Generado', 'badge badge-success', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
+function local_ga_admin_badge(string $status): string {
+    if ($status === 'generated' || $status === 'validated') {
+        return html_writer::span($status === 'generated' ? 'Generado' : 'Validado', 'badge badge-success', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
     }
     if ($status === 'pending') {
         return html_writer::span('Pendiente', 'badge badge-warning', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
-    }
-    if ($status === 'validated') {
-        return html_writer::span('Validado', 'badge badge-success', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
     }
     if ($status === 'rejected') {
         return html_writer::span('Rechazado', 'badge badge-danger', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
@@ -34,130 +34,100 @@ echo $OUTPUT->header();
 echo $OUTPUT->heading('Portafolio de certificados - gestor');
 
 echo html_writer::start_div('mb-3');
-echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Mi portafolio', ['class' => 'btn btn-secondary']);
-echo ' ';
 echo html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), 'Panel de gestión', ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Mi portafolio', ['class' => 'btn btn-secondary']);
 echo html_writer::end_div();
 
 echo html_writer::start_tag('form', ['method' => 'get', 'class' => 'mb-3']);
 echo html_writer::start_div('input-group');
-echo html_writer::empty_tag('input', [
-    'type' => 'text',
-    'name' => 'q',
-    'value' => s($q),
-    'class' => 'form-control',
-    'placeholder' => 'Buscar alumno por nombre, apellidos o email'
-]);
-echo html_writer::start_div('input-group-append');
+echo html_writer::empty_tag('input', ['type' => 'text', 'name' => 'q', 'value' => s($q), 'placeholder' => 'Buscar alumno por nombre o email', 'class' => 'form-control']);
+echo html_writer::select(['' => 'Todos los estados Tipo B', 'pending' => 'Pendientes', 'validated' => 'Validados', 'rejected' => 'Rechazados'], 'status', $status, false, ['class' => 'custom-select']);
 echo html_writer::empty_tag('input', ['type' => 'submit', 'value' => 'Buscar', 'class' => 'btn btn-primary']);
-echo html_writer::end_div();
 echo html_writer::end_div();
 echo html_writer::end_tag('form');
 
-if (!$DB->get_manager()->table_exists(new xmldb_table('local_ga_certificates'))) {
-    echo $OUTPUT->notification('Todavía no existe la tabla de certificados. Ejecuta la actualización del plugin.', 'warning');
-    echo $OUTPUT->footer();
-    exit;
+$selecteduser = null;
+if ($userid <= 0 && trim($q) !== '') {
+    $like = '%' . $DB->sql_like_escape(trim($q)) . '%';
+    $users = $DB->get_records_sql("SELECT id, firstname, lastname, email FROM {user} WHERE deleted = 0 AND (" . $DB->sql_like('firstname', ':q1', false) . " OR " . $DB->sql_like('lastname', ':q2', false) . " OR " . $DB->sql_like('email', ':q3', false) . ") ORDER BY lastname, firstname", ['q1' => $like, 'q2' => $like, 'q3' => $like], 0, 30);
+    if (count($users) === 1) {
+        $u = reset($users);
+        $userid = (int)$u->id;
+    } else if ($users) {
+        echo html_writer::tag('h3', 'Resultados de búsqueda');
+        $table = new html_table();
+        $table->head = ['Alumno', 'Email', 'Acción'];
+        foreach ($users as $u) {
+            $table->data[] = [fullname($u), s($u->email), html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['userid' => $u->id]), 'Ver portafolio', ['class' => 'btn btn-secondary btn-sm'])];
+        }
+        echo html_writer::table($table);
+    } else {
+        echo $OUTPUT->notification('No se han encontrado alumnos.', 'info');
+    }
 }
 
 if ($userid > 0) {
-    $user = $DB->get_record('user', ['id' => $userid, 'deleted' => 0], 'id, firstname, lastname, email', MUST_EXIST);
-    echo html_writer::tag('h3', 'Portafolio de ' . fullname($user));
+    $selecteduser = $DB->get_record('user', ['id' => $userid, 'deleted' => 0], '*', IGNORE_MISSING);
+}
 
-    $certificates = $DB->get_records_sql(
-        "SELECT c.*, w.name AS workshopname, w.code AS workshopcode, w.hours, e.name AS editionname, e.sessiondate, co.fullname AS coursename
-           FROM {local_ga_certificates} c
-           JOIN {local_ga_workshops} w ON w.id = c.workshopid
-           JOIN {local_ga_workshop_editions} e ON e.id = c.editionid
-           JOIN {course} co ON co.id = c.courseid
-          WHERE c.userid = :userid
-       ORDER BY c.timeissued DESC, c.id DESC",
-        ['userid' => $userid]
-    );
+if ($selecteduser) {
+    echo html_writer::tag('h2', 'Portafolio de ' . fullname($selecteduser));
+    $typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$selecteduser->id) : 0.0;
+    $typebvalidated = portfolio_typeb::total_validated_hours((int)$selecteduser->id);
+    echo html_writer::tag('p', 'Horas Tipo A: ' . round((float)$typeahours, 2) . ' h · Horas Tipo B validadas: ' . round((float)$typebvalidated, 2) . ' h · Total reconocido: ' . round((float)$typeahours + (float)$typebvalidated, 2) . ' h', ['class' => 'alert alert-info']);
 
-    $totalhours = 0.0;
-    foreach ($certificates as $cert) {
-        $totalhours += !empty($cert->hours) ? (float)$cert->hours : 0.0;
-    }
-    echo html_writer::tag('div', '<strong>Tipo A:</strong> ' . count($certificates) . ' certificados · <strong>' . round($totalhours, 2) . '</strong> horas', ['class' => 'alert alert-success']);
-
-    if (!$certificates) {
-        echo $OUTPUT->notification('Este alumno todavía no tiene certificados Tipo A generados.', 'info');
-    } else {
+    echo html_writer::tag('h3', 'Talleres Tipo A');
+    $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$selecteduser->id) : [];
+    if ($typeacerts) {
         $table = new html_table();
-        $table->head = ['Tipo', 'Curso', 'Taller', 'Edición / fecha', 'Horas', 'Estado', 'Acciones'];
-        foreach ($certificates as $cert) {
-            $date = !empty($cert->sessiondate) ? userdate((int)$cert->sessiondate, get_string('strftimedatefullshort', 'langconfig')) : '-';
-            $download = new moodle_url('/local/gestion_actividades/certificate_download.php', ['id' => $cert->id]);
-            $actions = html_writer::link($download, 'Descargar', ['class' => 'btn btn-primary btn-sm']);
+        $table->head = ['Taller', 'Horas', 'Fecha emisión', 'Estado', 'Acciones'];
+        foreach ($typeacerts as $c) {
+            $actions = html_writer::link(new moodle_url('/local/gestion_actividades/certificate_download.php', ['id' => $c->id]), 'Descargar', ['class' => 'btn btn-secondary btn-sm']);
             if (file_exists(__DIR__ . '/regenerate_certificate.php')) {
-                $actions .= ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/regenerate_certificate.php', ['id' => $cert->id, 'sesskey' => sesskey()]), 'Regenerar PDF', ['class' => 'btn btn-warning btn-sm']);
+                $actions .= ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/regenerate_certificate.php', ['id' => $c->id, 'sesskey' => sesskey()]), 'Regenerar', ['class' => 'btn btn-warning btn-sm']);
             }
-            $table->data[] = [
-                html_writer::span('Tipo A', 'badge badge-primary', ['style' => 'font-size:0.85rem;padding:6px 9px;']),
-                format_string($cert->coursename),
-                s($cert->workshopcode . ' - ' . $cert->workshopname),
-                s($cert->editionname) . '<br><small>' . s($date) . '</small>',
-                !empty($cert->hours) ? round((float)$cert->hours, 2) . ' h' : '-',
-                local_ga_admin_portfolio_status((string)($cert->status ?? 'generated')),
-                $actions,
-            ];
+            $table->data[] = [s($c->workshopcode . ' - ' . $c->workshopname), !empty($c->hours) ? round((float)$c->hours, 2) . ' h' : '-', userdate((int)$c->timeissued), local_ga_admin_badge($c->status ?: 'generated'), $actions];
         }
         echo html_writer::table($table);
+    } else {
+        echo $OUTPUT->notification('Este alumno no tiene certificados Tipo A generados.', 'info');
     }
 
-    echo html_writer::tag('h4', 'Tipo B', ['class' => 'mt-4']);
-    echo $OUTPUT->notification('Fase siguiente: aquí se revisarán los certificados Tipo B subidos por el alumno: pendiente, validado o rechazado.', 'info');
-    echo $OUTPUT->footer();
-    exit;
-}
-
-$params = [];
-$where = '';
-if (trim($q) !== '') {
-    $like = '%' . $DB->sql_like_escape(trim($q)) . '%';
-    $where = "WHERE " . $DB->sql_like('u.firstname', ':q1', false) .
-        " OR " . $DB->sql_like('u.lastname', ':q2', false) .
-        " OR " . $DB->sql_like('u.email', ':q3', false);
-    $params = ['q1' => $like, 'q2' => $like, 'q3' => $like];
-}
-
-$rows = $DB->get_records_sql(
-    "SELECT u.id, u.firstname, u.lastname, u.email,
-            COUNT(c.id) AS certificatesa,
-            COALESCE(SUM(w.hours), 0) AS hoursa,
-            MAX(c.timeissued) AS lastissued
-       FROM {local_ga_certificates} c
-       JOIN {user} u ON u.id = c.userid
-       JOIN {local_ga_workshops} w ON w.id = c.workshopid
-       $where
-   GROUP BY u.id, u.firstname, u.lastname, u.email
-   ORDER BY u.lastname ASC, u.firstname ASC",
-    $params,
-    0,
-    200
-);
-
-echo html_writer::tag('h3', 'Alumnos con certificados Tipo A');
-if (!$rows) {
-    echo $OUTPUT->notification('No se han encontrado alumnos con certificados generados.', 'info');
+    echo html_writer::tag('h3', 'Talleres Tipo B');
+    $typebcerts = portfolio_typeb::list_all((int)$selecteduser->id, $status);
 } else {
+    echo html_writer::tag('h2', 'Certificados Tipo B pendientes y revisados');
+    $typebcerts = portfolio_typeb::list_all(0, $status);
+}
+
+if (!empty($typebcerts)) {
     $table = new html_table();
-    $table->head = ['Alumno', 'Email', 'Certificados Tipo A', 'Horas Tipo A', 'Última emisión', 'Acciones'];
-    foreach ($rows as $row) {
+    $table->head = ['Alumno', 'Actividad', 'Fecha', 'Horas', 'Declaración', 'Estado', 'Comentario', 'Acciones'];
+    foreach ($typebcerts as $c) {
+        $actions = html_writer::link(new moodle_url('/local/gestion_actividades/typeb_download.php', ['id' => $c->id]), 'Descargar', ['class' => 'btn btn-secondary btn-sm']);
+        $commentinput = html_writer::empty_tag('input', ['type' => 'text', 'name' => 'comment', 'placeholder' => 'Comentario opcional', 'class' => 'form-control form-control-sm mb-1']);
+        $actions .= html_writer::start_tag('form', ['method' => 'post', 'action' => new moodle_url('/local/gestion_actividades/typeb_review.php'), 'style' => 'display:inline-block;margin-left:6px;min-width:220px;']);
+        $actions .= html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);
+        $actions .= html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'id', 'value' => $c->id]);
+        $actions .= $commentinput;
+        $actions .= html_writer::tag('button', 'Validar', ['type' => 'submit', 'name' => 'action', 'value' => 'validate', 'class' => 'btn btn-success btn-sm']);
+        $actions .= ' ' . html_writer::tag('button', 'Rechazar', ['type' => 'submit', 'name' => 'action', 'value' => 'reject', 'class' => 'btn btn-danger btn-sm']);
+        $actions .= html_writer::end_tag('form');
         $table->data[] = [
-            fullname($row),
-            s($row->email),
-            (int)$row->certificatesa,
-            round((float)$row->hoursa, 2) . ' h',
-            !empty($row->lastissued) ? userdate((int)$row->lastissued) : '-',
-            html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['userid' => $row->id]), 'Ver portafolio', ['class' => 'btn btn-secondary btn-sm']),
+            isset($c->firstname) ? fullname($c) . '<br><small>' . s($c->email) . '</small>' : '-',
+            s($c->activityname),
+            !empty($c->activitydate) ? userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) : '-',
+            round((float)$c->hours, 2) . ' h',
+            !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
+            local_ga_admin_badge((string)$c->status),
+            !empty($c->reviewcomment) ? s($c->reviewcomment) : '-',
+            $actions,
         ];
     }
     echo html_writer::table($table);
+} else {
+    echo $OUTPUT->notification('No hay certificados Tipo B con esos criterios.', 'info');
 }
-
-echo html_writer::tag('h3', 'Talleres Tipo B', ['class' => 'mt-4']);
-echo $OUTPUT->notification('La tabla de revisión de certificados Tipo B se añadirá cuando activemos la subida por alumno. Esta pantalla ya queda separada para incorporarla sin mezclarla con Tipo A.', 'info');
 
 echo $OUTPUT->footer();
