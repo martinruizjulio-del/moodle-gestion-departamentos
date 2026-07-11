@@ -938,7 +938,7 @@ class manager {
             $entryname = trim($workshop->code . ' - ' . $workshop->name);
 
             $viewurl = new \moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => $workshop->id]);
-            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id]) : $viewurl;
+            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id, 'sesskey' => sesskey()]) : $viewurl;
             $date = $edition ? self::format_workshop_date((int)$edition->sessiondate) : '-';
             $description = trim((string)($workshop->description ?? ''));
 

@@ -20,7 +20,8 @@ echo html_writer::tag('p', get_string('workshopactions_help', 'local_gestion_act
 echo html_writer::div(
     html_writer::link(new moodle_url('/local/gestion_actividades/workshop_edit.php'), get_string('newworkshop', 'local_gestion_actividades'), ['class' => 'btn btn-primary']) . ' ' .
     html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), get_string('dashboard', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
-    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php'), get_string('repaircoursevisuals', 'local_gestion_actividades') . ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/cleanup_course_entries.php'), get_string('cleanupcourseentries', 'local_gestion_actividades'), ['class' => 'btn btn-danger']), ['class' => 'btn btn-secondary']),
+    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php', ['sesskey' => sesskey()]), get_string('repaircoursevisuals', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
+    html_writer::link(new moodle_url('/local/gestion_actividades/cleanup_course_entries.php'), get_string('cleanupcourseentries', 'local_gestion_actividades'), ['class' => 'btn btn-danger']),
     'mb-3'
 );
 

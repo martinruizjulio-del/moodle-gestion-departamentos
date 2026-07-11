@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
 require_login();
 $context = context_system::instance();
 require_capability('local/gestion_actividades:manage', $context);
+require_sesskey();
 
 $workshopid = required_param('workshopid', PARAM_INT);
 $ok = manager::ensure_workshop_sections_safely($workshopid);

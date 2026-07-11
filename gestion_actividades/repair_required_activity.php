@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
 $id = required_param('id', PARAM_INT); // edition id
 
 require_login();
+require_sesskey();
 
 $edition = manager::get_workshop_edition($id);
 $workshop = manager::get_workshop((int)$edition->workshopid);

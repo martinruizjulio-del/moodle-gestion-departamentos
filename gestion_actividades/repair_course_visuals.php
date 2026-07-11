@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
 require_login();
 $context = context_system::instance();
 require_capability('local/gestion_actividades:manage', $context);
+require_sesskey();
 
 $courseid = optional_param('courseid', 0, PARAM_INT);
 $summary = manager::ensure_all_workshop_course_visuals($courseid);

@@ -133,7 +133,7 @@ echo ' ';
 if ($edition) {
     echo html_writer::link(new moodle_url('/local/gestion_actividades/task_activity.php', ['id' => $edition->id]), get_string('manageconfiguredactivity', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
 echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id, 'sesskey' => sesskey()]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
 
 }
 echo html_writer::end_tag('div');
