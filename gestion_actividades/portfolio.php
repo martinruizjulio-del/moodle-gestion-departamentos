@@ -35,6 +35,33 @@ function local_ga_typea_hours_from_certificates(array $certificates): float {
     return $total;
 }
 
+function local_ga_student_progress_block(float $typeahours, float $typebvalidatedhours, float $typebuploadedhours, int $typeacount, int $typebcount): block_contents {
+    $requiredhours = 54.0;
+    $totalvalidated = $typeahours + $typebvalidatedhours;
+    $pending = max(0.0, $requiredhours - $totalvalidated);
+    $percent = $requiredhours > 0 ? min(100, round(($totalvalidated / $requiredhours) * 100)) : 0;
+
+    $content = html_writer::start_div('local-ga-student-progress');
+    $content .= html_writer::tag('div', round($totalvalidated, 2) . ' / ' . round($requiredhours, 2) . ' h', ['style' => 'font-size:1.35rem;font-weight:700;margin-bottom:6px;']);
+    $content .= html_writer::start_div('progress mb-2', ['style' => 'height:18px;']);
+    $content .= html_writer::div($percent . '%', 'progress-bar', ['role' => 'progressbar', 'style' => 'width:' . $percent . '%;', 'aria-valuenow' => $percent, 'aria-valuemin' => 0, 'aria-valuemax' => 100]);
+    $content .= html_writer::end_div();
+    $content .= html_writer::tag('p', $pending > 0 ? 'Te faltan ' . round($pending, 2) . ' h para completar las 54 h.' : 'Objetivo de 54 h completado.', ['class' => $pending > 0 ? 'text-muted' : 'text-success font-weight-bold']);
+    $content .= html_writer::tag('hr', '');
+    $content .= html_writer::tag('p', '<strong>Tipo A:</strong> ' . round($typeahours, 2) . ' h · ' . (int)$typeacount . ' certificado(s)', ['class' => 'mb-1']);
+    $content .= html_writer::tag('p', '<strong>Tipo B validado:</strong> ' . round($typebvalidatedhours, 2) . ' h', ['class' => 'mb-1']);
+    $content .= html_writer::tag('p', '<strong>Tipo B subido:</strong> ' . round($typebuploadedhours, 2) . ' h · ' . (int)$typebcount . ' certificado(s)', ['class' => 'mb-2']);
+    $content .= html_writer::link(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Ver portafolio', ['class' => 'btn btn-primary btn-sm btn-block mb-1']);
+    $content .= html_writer::link(new moodle_url('/local/gestion_actividades/typeb_upload.php'), 'Subir Tipo B', ['class' => 'btn btn-secondary btn-sm btn-block']);
+    $content .= html_writer::end_div();
+
+    $block = new block_contents();
+    $block->title = 'Mis horas de talleres';
+    $block->content = $content;
+    $block->attributes['class'] = 'local-ga-student-progress-block';
+    return $block;
+}
+
 $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$USER->id) : [];
 $typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$USER->id) : 0.0;
 $certtypeahours = local_ga_typea_hours_from_certificates($typeacerts);
@@ -46,6 +73,10 @@ $typebcerts = portfolio_typeb::list_for_user((int)$USER->id);
 $typebvalidatedhours = portfolio_typeb::total_validated_hours((int)$USER->id);
 $typebuploadedhours = portfolio_typeb::total_uploaded_hours((int)$USER->id);
 $totalvalidated = (float)$typeahours + (float)$typebvalidatedhours;
+$requiredhours = 54.0;
+$pendinghours = max(0.0, $requiredhours - $totalvalidated);
+
+$PAGE->blocks->add_fake_block(local_ga_student_progress_block((float)$typeahours, (float)$typebvalidatedhours, (float)$typebuploadedhours, count($typeacerts), count($typebcerts)), 'side-pre');
 
 $haspendingtypeb = false;
 foreach ($typebcerts as $cert) {
@@ -70,11 +101,17 @@ if ($haspendingtypeb) {
     echo $OUTPUT->notification('Tienes certificados Tipo B pendientes de revisión por el gestor.', 'info');
 }
 
+echo html_writer::start_div('alert alert-info');
+echo html_writer::tag('strong', 'Objetivo: 54 horas. ');
+echo 'Tienes reconocidas ' . round((float)$totalvalidated, 2) . ' h. ';
+echo $pendinghours > 0 ? 'Te faltan ' . round((float)$pendinghours, 2) . ' h.' : 'Ya has completado el objetivo.';
+echo html_writer::end_div();
+
 echo html_writer::start_div('row mb-3');
 $cards = [
     ['Talleres Tipo A', round((float)$typeahours, 2) . ' h', 'Generadas por el sistema'],
     ['Talleres Tipo B validadas', round((float)$typebvalidatedhours, 2) . ' h', 'Subidas por el alumno y validadas'],
-    ['Total reconocido', round((float)$totalvalidated, 2) . ' h', 'Tipo A + Tipo B validadas'],
+    ['Horas pendientes', round((float)$pendinghours, 2) . ' h', 'Hasta completar 54 horas'],
 ];
 foreach ($cards as $card) {
     echo html_writer::start_div('col-md-4 mb-3');
