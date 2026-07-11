@@ -2,7 +2,6 @@
 require_once(__DIR__ . '/../../config.php');
 
 use local_gestion_actividades\local\manager;
-use local_gestion_actividades\local\portfolio_pdf;
 use local_gestion_actividades\local\portfolio_typeb;
 
 require_login();
@@ -26,31 +25,47 @@ function local_ga_portfolio_badge(string $status): string {
     return html_writer::span(s($status), 'badge badge-secondary', ['style' => 'font-size:0.85rem;padding:6px 9px;']);
 }
 
+function local_ga_typea_hours_from_certificates(array $certificates): float {
+    $total = 0.0;
+    foreach ($certificates as $c) {
+        if (isset($c->hours) && $c->hours !== null && $c->hours !== '') {
+            $total += (float)$c->hours;
+        }
+    }
+    return $total;
+}
+
 $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$USER->id) : [];
-$typeahours = portfolio_pdf::get_typea_hours((int)$USER->id);
+$typeahours = method_exists(manager::class, 'get_student_total_hours') ? manager::get_student_total_hours((int)$USER->id) : 0.0;
+$certtypeahours = local_ga_typea_hours_from_certificates($typeacerts);
+if ($typeahours <= 0 && $certtypeahours > 0) {
+    $typeahours = $certtypeahours;
+}
 
 $typebcerts = portfolio_typeb::list_for_user((int)$USER->id);
 $typebvalidatedhours = portfolio_typeb::total_validated_hours((int)$USER->id);
 $typebuploadedhours = portfolio_typeb::total_uploaded_hours((int)$USER->id);
 $totalvalidated = (float)$typeahours + (float)$typebvalidatedhours;
 
-$pendingcount = has_capability('local/gestion_actividades:manage', $context) ? portfolio_typeb::count_pending() : 0;
+$haspendingtypeb = false;
+foreach ($typebcerts as $cert) {
+    if ((string)$cert->status === 'pending') {
+        $haspendingtypeb = true;
+        break;
+    }
+}
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading('Portafolio de certificados');
 
-echo html_writer::div(
-    html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php'), 'Descargar mi portafolio en PDF', ['class' => 'btn btn-primary']) . ' ' .
-    html_writer::link(new moodle_url('/local/gestion_actividades/typeb_upload.php'), 'Subir certificado Tipo B', ['class' => 'btn btn-secondary']),
-    'mb-3'
-);
+echo html_writer::start_div('mb-3');
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php'), 'Descargar mi portafolio en PDF', ['class' => 'btn btn-primary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/typeb_upload.php'), 'Subir certificado Tipo B', ['class' => 'btn btn-secondary']);
+echo html_writer::end_div();
 
-if ($pendingcount > 0) {
-    echo html_writer::div(
-        '<strong>Atención:</strong> hay ' . (int)$pendingcount . ' certificado(s) Tipo B pendiente(s) de validar. ' .
-        html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['status' => 'pending']), 'Revisar ahora', ['class' => 'btn btn-warning btn-sm ml-2']),
-        'alert alert-warning'
-    );
+if ($haspendingtypeb) {
+    echo $OUTPUT->notification('Tienes certificados Tipo B pendientes de revisión por el gestor.', 'info');
 }
 
 echo html_writer::start_div('row mb-3');
@@ -107,7 +122,10 @@ if ($typebcerts) {
     $table = new html_table();
     $table->head = ['Actividad', 'Fecha', 'Horas', 'Declaración normativa', 'Estado', 'Comentario', 'Acciones'];
     foreach ($typebcerts as $c) {
+        $view = new moodle_url('/local/gestion_actividades/typeb_view.php', ['id' => $c->id]);
         $download = new moodle_url('/local/gestion_actividades/typeb_download.php', ['id' => $c->id]);
+        $actions = html_writer::link($view, 'Ver PDF', ['class' => 'btn btn-secondary btn-sm', 'target' => '_blank']) . ' ' .
+                   html_writer::link($download, 'Descargar PDF', ['class' => 'btn btn-secondary btn-sm']);
         $table->data[] = [
             s($c->activityname),
             !empty($c->activitydate) ? userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) : '-',
@@ -115,16 +133,12 @@ if ($typebcerts) {
             !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
             local_ga_portfolio_badge((string)$c->status),
             !empty($c->reviewcomment) ? s($c->reviewcomment) : '-',
-            html_writer::link($download, 'Descargar PDF', ['class' => 'btn btn-secondary btn-sm']),
+            $actions,
         ];
     }
     echo html_writer::table($table);
 } else {
     echo $OUTPUT->notification('Todavía no has subido certificados Tipo B.', 'info');
-}
-
-if (has_capability('local/gestion_actividades:manage', $context)) {
-    echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php'), 'Abrir portafolio gestor', ['class' => 'btn btn-secondary']), 'mt-3');
 }
 
 echo $OUTPUT->footer();
