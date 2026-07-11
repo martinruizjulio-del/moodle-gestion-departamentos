@@ -6,7 +6,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_gestion_actividades';
-$plugin->version = 2026071070;
+$plugin->version = 2026071071;
 $plugin->requires  = 2022041900; // Moodle 4.0+.
 $plugin->maturity  = MATURITY_ALPHA;
-$plugin->release = '1.4.3-alpha';
+$plugin->release = '1.4.4-alpha';
