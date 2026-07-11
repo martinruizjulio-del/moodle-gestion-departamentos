@@ -1,0 +1,88 @@
+diff --git a/gestion_actividades/classes/local/manager.php b/gestion_actividades/classes/local/manager.php
+index 971d847..b53d9f9 100644
+--- a/gestion_actividades/classes/local/manager.php
++++ b/gestion_actividades/classes/local/manager.php
+@@ -938,7 +938,7 @@ class manager {
+             $entryname = trim($workshop->code . ' - ' . $workshop->name);
+ 
+             $viewurl = new \moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => $workshop->id]);
+-            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id]) : $viewurl;
++            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id, 'sesskey' => sesskey()]) : $viewurl;
+             $date = $edition ? self::format_workshop_date((int)$edition->sessiondate) : '-';
+             $description = trim((string)($workshop->description ?? ''));
+ 
+diff --git a/gestion_actividades/enrol.php b/gestion_actividades/enrol.php
+index 136f42d..0d658ac 100644
+--- a/gestion_actividades/enrol.php
++++ b/gestion_actividades/enrol.php
+@@ -9,6 +9,7 @@ $workshop = manager::get_workshop((int)$edition->workshopid);
+ $course = $DB->get_record('course', ['id' => $workshop->courseid], '*', MUST_EXIST);
+ 
+ require_login($course);
++require_sesskey();
+ 
+ $result = manager::enrol_user_in_edition($editionid, (int)$USER->id, 'self');
+ 
+diff --git a/gestion_actividades/repair_course_visuals.php b/gestion_actividades/repair_course_visuals.php
+index ac17d3f..b2fd8ba 100644
+--- a/gestion_actividades/repair_course_visuals.php
++++ b/gestion_actividades/repair_course_visuals.php
+@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
+ require_login();
+ $context = context_system::instance();
+ require_capability('local/gestion_actividades:manage', $context);
++require_sesskey();
+ 
+ $courseid = optional_param('courseid', 0, PARAM_INT);
+ $summary = manager::ensure_all_workshop_course_visuals($courseid);
+diff --git a/gestion_actividades/repair_required_activity.php b/gestion_actividades/repair_required_activity.php
+index 0ba43e7..4be0f22 100644
+--- a/gestion_actividades/repair_required_activity.php
++++ b/gestion_actividades/repair_required_activity.php
+@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
+ $id = required_param('id', PARAM_INT); // edition id
+ 
+ require_login();
++require_sesskey();
+ 
+ $edition = manager::get_workshop_edition($id);
+ $workshop = manager::get_workshop((int)$edition->workshopid);
+diff --git a/gestion_actividades/repair_sections.php b/gestion_actividades/repair_sections.php
+index 830ec88..5d914d6 100644
+--- a/gestion_actividades/repair_sections.php
++++ b/gestion_actividades/repair_sections.php
+@@ -6,6 +6,7 @@ use local_gestion_actividades\local\manager;
+ require_login();
+ $context = context_system::instance();
+ require_capability('local/gestion_actividades:manage', $context);
++require_sesskey();
+ 
+ $workshopid = required_param('workshopid', PARAM_INT);
+ $ok = manager::ensure_workshop_sections_safely($workshopid);
+diff --git a/gestion_actividades/teacher_view.php b/gestion_actividades/teacher_view.php
+index 858df07..f8c5c3a 100644
+--- a/gestion_actividades/teacher_view.php
++++ b/gestion_actividades/teacher_view.php
+@@ -133,7 +133,7 @@ echo ' ';
+ if ($edition) {
+     echo html_writer::link(new moodle_url('/local/gestion_actividades/task_activity.php', ['id' => $edition->id]), get_string('manageconfiguredactivity', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+ echo ' ';
+-echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
++echo html_writer::link(new moodle_url('/local/gestion_actividades/repair_required_activity.php', ['id' => $edition->id, 'sesskey' => sesskey()]), get_string('repairrequiredactivityrestriction', 'local_gestion_actividades'), ['class' => 'btn btn-warning']);
+ 
+ }
+ echo html_writer::end_tag('div');
+diff --git a/gestion_actividades/workshops.php b/gestion_actividades/workshops.php
+index 09c1dd3..95af16e 100644
+--- a/gestion_actividades/workshops.php
++++ b/gestion_actividades/workshops.php
+@@ -20,7 +20,8 @@ echo html_writer::tag('p', get_string('workshopactions_help', 'local_gestion_act
+ echo html_writer::div(
+     html_writer::link(new moodle_url('/local/gestion_actividades/workshop_edit.php'), get_string('newworkshop', 'local_gestion_actividades'), ['class' => 'btn btn-primary']) . ' ' .
+     html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), get_string('dashboard', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
+-    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php'), get_string('repaircoursevisuals', 'local_gestion_actividades') . ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/cleanup_course_entries.php'), get_string('cleanupcourseentries', 'local_gestion_actividades'), ['class' => 'btn btn-danger']), ['class' => 'btn btn-secondary']),
++    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php', ['sesskey' => sesskey()]), get_string('repaircoursevisuals', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
++    html_writer::link(new moodle_url('/local/gestion_actividades/cleanup_course_entries.php'), get_string('cleanupcourseentries', 'local_gestion_actividades'), ['class' => 'btn btn-danger']),
+     'mb-3'
+ );
+ 
