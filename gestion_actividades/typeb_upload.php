@@ -17,13 +17,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_sesskey();
 
     $activityname = required_param('activityname', PARAM_TEXT);
-    $activitydateparts = optional_param_array('activitydate', [], PARAM_INT);
+    $activitydatestr = required_param('activitydate', PARAM_TEXT);
     $hours = required_param('hours', PARAM_FLOAT);
     $authorized = optional_param('authorizedconfirm', 0, PARAM_INT);
 
     $activitydate = 0;
-    if (!empty($activitydateparts['year']) && !empty($activitydateparts['month']) && !empty($activitydateparts['day'])) {
-        $activitydate = make_timestamp((int)$activitydateparts['year'], (int)$activitydateparts['month'], (int)$activitydateparts['day']);
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $activitydatestr)) {
+        [$year, $month, $day] = array_map('intval', explode('-', $activitydatestr));
+        $activitydate = make_timestamp($year, $month, $day);
     }
 
     if (trim($activityname) === '') {
@@ -49,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (!$errors) {
-        $id = portfolio_typeb::create_upload((int)$USER->id, $activityname, $activitydate, (float)$hours, $filename, $_FILES['certificatefile']['tmp_name']);
+        portfolio_typeb::create_upload((int)$USER->id, $activityname, $activitydate, (float)$hours, $filename, $_FILES['certificatefile']['tmp_name']);
         redirect(new moodle_url('/local/gestion_actividades/portfolio.php'), 'Certificado Tipo B subido correctamente. Queda pendiente de revisión por el gestor.', null, \core\output\notification::NOTIFY_SUCCESS);
     }
 }
@@ -73,14 +74,8 @@ echo html_writer::tag('h3', 'Datos de la actividad');
 echo html_writer::tag('label', 'Nombre de la actividad', ['for' => 'activityname']);
 echo html_writer::empty_tag('input', ['type' => 'text', 'name' => 'activityname', 'id' => 'activityname', 'class' => 'form-control mb-3', 'required' => 'required']);
 
-echo html_writer::tag('label', 'Fecha de la actividad');
-echo html_writer::start_div('mb-3');
-echo html_writer::select_time('days', 'activitydate[day]', time());
-echo ' ';
-echo html_writer::select_time('months', 'activitydate[month]', time());
-echo ' ';
-echo html_writer::select_time('years', 'activitydate[year]', time());
-echo html_writer::end_div();
+echo html_writer::tag('label', 'Fecha de la actividad', ['for' => 'activitydate']);
+echo html_writer::empty_tag('input', ['type' => 'date', 'name' => 'activitydate', 'id' => 'activitydate', 'class' => 'form-control mb-3', 'required' => 'required']);
 
 echo html_writer::tag('label', 'Número de horas', ['for' => 'hours']);
 echo html_writer::empty_tag('input', ['type' => 'number', 'step' => '0.5', 'min' => '0.5', 'name' => 'hours', 'id' => 'hours', 'class' => 'form-control mb-3', 'required' => 'required']);
