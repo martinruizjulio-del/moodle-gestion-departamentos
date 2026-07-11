@@ -61,6 +61,8 @@ echo $OUTPUT->heading('Portafolio de certificados');
 echo html_writer::start_div('mb-3');
 echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php'), 'Descargar mi portafolio en PDF', ['class' => 'btn btn-primary']);
 echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_package_download.php'), 'Descargar expediente completo ZIP', ['class' => 'btn btn-primary']);
+echo ' ';
 echo html_writer::link(new moodle_url('/local/gestion_actividades/typeb_upload.php'), 'Subir certificado Tipo B', ['class' => 'btn btn-secondary']);
 echo html_writer::end_div();
 
