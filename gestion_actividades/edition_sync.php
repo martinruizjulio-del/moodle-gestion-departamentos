@@ -5,7 +5,9 @@ use local_gestion_actividades\local\manager;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $id = required_param('id', PARAM_INT);
 $edition = manager::get_workshop_edition($id);
@@ -17,6 +19,8 @@ $PAGE->set_title(get_string('synceditionenrolments', 'local_gestion_actividades'
 $PAGE->set_heading(get_string('title', 'local_gestion_actividades'));
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('synceditionenrolments', 'local_gestion_actividades') . ': ' . format_string($edition->name));
 
 if (data_submitted() && confirm_sesskey()) {

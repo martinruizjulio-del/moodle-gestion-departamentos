@@ -9,6 +9,10 @@ class portfolio_typeb {
         $dbman = $DB->get_manager();
         $table = new \xmldb_table('local_ga_typeb_certs');
         if ($dbman->table_exists($table)) {
+            $field = new \xmldb_field('activitydescription', XMLDB_TYPE_TEXT, null, null, null, null, null, 'hours');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
             return;
         }
 
@@ -17,6 +21,7 @@ class portfolio_typeb {
         $table->add_field('activityname', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
         $table->add_field('activitydate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
         $table->add_field('hours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('activitydescription', XMLDB_TYPE_TEXT, null, null, null, null, null);
         $table->add_field('authorizedconfirm', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0');
         $table->add_field('filename', XMLDB_TYPE_CHAR, '255', null, null, null, null);
         $table->add_field('status', XMLDB_TYPE_CHAR, '30', null, XMLDB_NOTNULL, null, 'pending');
@@ -31,7 +36,7 @@ class portfolio_typeb {
         $dbman->create_table($table);
     }
 
-    public static function create_upload(int $userid, string $activityname, int $activitydate, float $hours, string $filename, string $tmpfilepath): int {
+    public static function create_upload(int $userid, string $activityname, int $activitydate, float $hours, string $activitydescription, string $filename, string $tmpfilepath): int {
         global $DB;
         self::ensure_table();
         $now = time();
@@ -40,6 +45,7 @@ class portfolio_typeb {
             'activityname' => trim($activityname),
             'activitydate' => $activitydate,
             'hours' => max(0, $hours),
+            'activitydescription' => trim($activitydescription),
             'authorizedconfirm' => 1,
             'filename' => clean_filename($filename),
             'status' => 'pending',
@@ -61,8 +67,10 @@ class portfolio_typeb {
             'itemid' => $id,
             'filepath' => '/',
             'filename' => clean_filename($filename),
-            'mimetype' => 'application/pdf',
+            'mimetype' => function_exists('mimeinfo') ? mimeinfo('type', clean_filename($filename)) : 'application/octet-stream',
         ], $tmpfilepath);
+
+        self::invalidate_block_cache_for_user($userid);
 
         return $id;
     }
@@ -120,6 +128,22 @@ class portfolio_typeb {
         $record->timereviewed = time();
         $record->timemodified = time();
         $DB->update_record('local_ga_typeb_certs', $record);
+        self::invalidate_block_cache_for_user((int)$record->userid);
+        if (class_exists('\\local_gestion_actividades\\local\\grade_manager')) {
+            grade_manager::sync_user_safely((int)$record->userid);
+        }
+        return true;
+    }
+
+    public static function delete_upload(int $id): bool {
+        global $DB;
+        self::ensure_table();
+        $record = self::get($id);
+        $userid = (int)$record->userid;
+        $context = \context_system::instance();
+        get_file_storage()->delete_area_files($context->id, 'local_gestion_actividades', 'typeb_certificate', $id);
+        $DB->delete_records('local_ga_typeb_certs', ['id' => $id]);
+        self::invalidate_block_cache_for_user($userid);
         return true;
     }
 
@@ -135,5 +159,30 @@ class portfolio_typeb {
         self::ensure_table();
         $total = $DB->get_field_sql("SELECT COALESCE(SUM(hours), 0) FROM {local_ga_typeb_certs} WHERE userid = :userid", ['userid' => $userid]);
         return (float)$total;
+    }
+
+    private static function invalidate_block_cache_for_user(int $userid): void {
+        global $CFG;
+
+        $userid = max(0, $userid);
+        if ($userid <= 0) {
+            return;
+        }
+
+        try {
+            if (!function_exists('block_gestion_hee_invalidate_user_cache')) {
+                $blocklib = $CFG->dirroot . '/blocks/gestion_hee/lib.php';
+                if (is_readable($blocklib)) {
+                    require_once($blocklib);
+                }
+            }
+            if (function_exists('block_gestion_hee_invalidate_user_cache')) {
+                block_gestion_hee_invalidate_user_cache($userid);
+            }
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('No se ha podido invalidar la caché del bloque Gestión HEE: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
     }
 }

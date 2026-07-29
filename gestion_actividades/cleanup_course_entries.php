@@ -5,7 +5,9 @@ use local_gestion_actividades\local\manager;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $courseid = optional_param('courseid', 0, PARAM_INT);
 $confirm = optional_param('confirm', 0, PARAM_BOOL);

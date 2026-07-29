@@ -6,7 +6,9 @@ use local_gestion_actividades\local\portfolio_typeb;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $q = optional_param('q', '', PARAM_TEXT);
 $userid = optional_param('userid', 0, PARAM_INT);
@@ -16,6 +18,11 @@ $PAGE->set_context($context);
 $PAGE->set_url(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['q' => $q, 'userid' => $userid, 'status' => $status]));
 $PAGE->set_title('Portafolio de certificados - gestor');
 $PAGE->set_heading('Portafolio de certificados - gestor');
+
+function local_ga_btn_icon(string $pix, string $label): string {
+    global $OUTPUT;
+    return $OUTPUT->pix_icon($pix, '', 'moodle', ['class' => 'iconsmall mr-1']) . ' ' . $label;
+}
 
 function local_ga_admin_badge(string $status): string {
     if ($status === 'generated' || $status === 'validated') {
@@ -41,6 +48,8 @@ function local_ga_admin_typea_hours_from_certificates(array $certificates): floa
 }
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading('Portafolio de certificados - gestor');
 
 $pendingcount = 0;
@@ -54,11 +63,12 @@ if ($pendingcount > 0) {
 }
 
 echo html_writer::start_div('mb-3');
-echo html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), 'Panel de gestión', ['class' => 'btn btn-secondary']);
 echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_cover_template.php'), 'Editar portada PDF', ['class' => 'btn btn-secondary']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/manager_downloads.php'), local_ga_btn_icon('t/download', 'Listados y descargas'), ['class' => 'btn btn-primary']);
 echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_all.php', ['sesskey' => sesskey()]), 'Descargar todos los portafolios', ['class' => 'btn btn-primary']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_cover_template.php'), local_ga_btn_icon('t/edit', 'Editar portada PDF'), ['class' => 'btn btn-secondary']);
+echo ' ';
+echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_all.php', ['sesskey' => sesskey()]), local_ga_btn_icon('t/download', 'Descargar todos los portafolios'), ['class' => 'btn btn-primary']);
 echo html_writer::end_div();
 
 echo html_writer::start_tag('form', ['method' => 'get', 'class' => 'mb-3']);
@@ -81,7 +91,7 @@ if ($userid <= 0 && trim($q) !== '') {
         $table = new html_table();
         $table->head = ['Alumno', 'Email', 'Acción'];
         foreach ($users as $u) {
-            $table->data[] = [fullname($u), s($u->email), html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['userid' => $u->id]), 'Ver portafolio', ['class' => 'btn btn-secondary btn-sm'])];
+            $table->data[] = [fullname($u), s($u->email), html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_admin.php', ['userid' => $u->id]), local_ga_btn_icon('i/report', 'Ver portafolio'), ['class' => 'btn btn-secondary btn-sm'])];
         }
         echo html_writer::table($table);
     } else {
@@ -104,9 +114,9 @@ if ($selecteduser) {
     $typebvalidated = portfolio_typeb::total_validated_hours((int)$selecteduser->id);
     echo html_writer::tag('p', 'Horas Tipo A: ' . round((float)$typeahours, 2) . ' h · Horas Tipo B validadas: ' . round((float)$typebvalidated, 2) . ' h · Total reconocido: ' . round((float)$typeahours + (float)$typebvalidated, 2) . ' h', ['class' => 'alert alert-info']);
     echo html_writer::start_div('mb-3');
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), 'Descargar portafolio PDF de este alumno', ['class' => 'btn btn-primary']);
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_pdf_download.php', ['userid' => $selecteduser->id]), local_ga_btn_icon('t/download', 'Descargar portafolio PDF de este alumno'), ['class' => 'btn btn-primary']);
     echo ' ';
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_package_download.php', ['userid' => $selecteduser->id]), 'Descargar expediente completo ZIP', ['class' => 'btn btn-primary']);
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/portfolio_package_download.php', ['userid' => $selecteduser->id]), local_ga_btn_icon('t/download', 'Descargar expediente completo ZIP'), ['class' => 'btn btn-primary']);
     echo html_writer::end_div();
 
     echo html_writer::tag('h3', 'Talleres Tipo A');
@@ -114,9 +124,9 @@ if ($selecteduser) {
         $table = new html_table();
         $table->head = ['Taller', 'Horas', 'Fecha emisión', 'Estado', 'Acciones'];
         foreach ($typeacerts as $c) {
-            $actions = html_writer::link(new moodle_url('/local/gestion_actividades/certificate_download.php', ['id' => $c->id]), 'Descargar', ['class' => 'btn btn-secondary btn-sm']);
+            $actions = html_writer::link(new moodle_url('/local/gestion_actividades/certificate_download.php', ['id' => $c->id]), local_ga_btn_icon('t/download', 'Descargar'), ['class' => 'btn btn-secondary btn-sm']);
             if (file_exists(__DIR__ . '/regenerate_certificate.php')) {
-                $actions .= ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/regenerate_certificate.php', ['id' => $c->id, 'sesskey' => sesskey()]), 'Regenerar', ['class' => 'btn btn-warning btn-sm']);
+                $actions .= ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/regenerate_certificate.php', ['id' => $c->id, 'sesskey' => sesskey()]), local_ga_btn_icon('t/reload', 'Regenerar'), ['class' => 'btn btn-warning btn-sm']);
             }
             $table->data[] = [s($c->workshopcode . ' - ' . $c->workshopname), !empty($c->hours) ? round((float)$c->hours, 2) . ' h' : '-', userdate((int)$c->timeissued), local_ga_admin_badge($c->status ?: 'generated'), $actions];
         }
@@ -136,8 +146,8 @@ if (!empty($typebcerts)) {
     $table = new html_table();
     $table->head = ['Alumno', 'Actividad', 'Fecha', 'Horas', 'Declaración', 'Estado', 'Comentario', 'PDF', 'Validación'];
     foreach ($typebcerts as $c) {
-        $pdfactions = html_writer::link(new moodle_url('/local/gestion_actividades/typeb_view.php', ['id' => $c->id]), 'Ver PDF', ['class' => 'btn btn-primary btn-sm', 'target' => '_blank']) . ' ' .
-                      html_writer::link(new moodle_url('/local/gestion_actividades/typeb_download.php', ['id' => $c->id]), 'Descargar PDF', ['class' => 'btn btn-secondary btn-sm']);
+        $pdfactions = html_writer::link(new moodle_url('/local/gestion_actividades/typeb_view.php', ['id' => $c->id]), local_ga_btn_icon('t/preview', 'Ver PDF'), ['class' => 'btn btn-primary btn-sm', 'target' => '_blank']) . ' ' .
+                      html_writer::link(new moodle_url('/local/gestion_actividades/typeb_download.php', ['id' => $c->id]), local_ga_btn_icon('t/download', 'Descargar PDF'), ['class' => 'btn btn-secondary btn-sm']);
         $reviewactions = html_writer::start_tag('form', ['method' => 'post', 'action' => new moodle_url('/local/gestion_actividades/typeb_review.php'), 'style' => 'display:inline-block;min-width:240px;']);
         $reviewactions .= html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);
         $reviewactions .= html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'id', 'value' => $c->id]);
@@ -150,6 +160,7 @@ if (!empty($typebcerts)) {
             s($c->activityname),
             !empty($c->activitydate) ? userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) : '-',
             round((float)$c->hours, 2) . ' h',
+            !empty($c->activitydescription) ? format_text($c->activitydescription, FORMAT_PLAIN) : '-',
             !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
             local_ga_admin_badge((string)$c->status),
             !empty($c->reviewcomment) ? s($c->reviewcomment) : '-',
@@ -162,4 +173,7 @@ if (!empty($typebcerts)) {
     echo $OUTPUT->notification('No hay certificados Tipo B con esos criterios.', 'info');
 }
 
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();

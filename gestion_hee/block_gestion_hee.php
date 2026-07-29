@@ -25,7 +25,7 @@ class block_gestion_hee extends block_base {
     }
 
     public function get_content() {
-        global $DB, $USER;
+        global $USER;
 
         if ($this->content !== null) {
             return $this->content;
@@ -38,94 +38,101 @@ class block_gestion_hee extends block_base {
             return $this->content;
         }
 
-        $userid = (int)$USER->id;
-
-        // Se calcula en cada carga de página. No depende de cron ni de acciones manuales.
-        $typeahours = $this->get_typea_hours($userid);
-        $typebhours = $this->get_typeb_hours($userid);
-        $total = $typeahours + $typebhours;
-        $remaining = max(0, 54 - $total);
-
-        $this->content->text .= html_writer::tag('style', '.block-gestion-hee-student-summary .local-ga-badge-remaining{background:#d96c06;color:#fff;}');
-        $this->content->text .= html_writer::start_div('block-gestion-hee-student-summary');
-
-        if ($total <= 0) {
-            $this->content->text .= html_writer::tag('p', get_string('nohoursyet', 'block_gestion_hee'), ['class' => 'text-muted']);
+        try {
+            $teachersummary = \block_gestion_hee\local\teacher_workshops_cache::get_summary((int)$USER->id);
+            if (!empty($teachersummary['total'])) {
+                // Vista docente exclusiva: no mezclar horas/acciones de alumno con la gestión del profesor.
+                $this->content->text = $this->render_teacher_tools($teachersummary);
+            } else {
+                $summary = \block_gestion_hee\local\student_hours_cache::get_summary((int)$USER->id);
+                $this->content->text = $this->render_summary($summary);
+            }
+        } catch (Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('No se ha podido renderizar block_gestion_hee: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+            $this->content->text = html_writer::div(
+                get_string('temporarilyunavailable', 'block_gestion_hee'),
+                'text-muted small'
+            );
         }
-
-        $this->content->text .= $this->render_metric(get_string('typeahours', 'block_gestion_hee'), $typeahours, 'badge-success');
-        $this->content->text .= $this->render_metric(get_string('typebhours', 'block_gestion_hee'), $typebhours, 'badge-success');
-        $this->content->text .= html_writer::tag('hr', '');
-        $this->content->text .= $this->render_metric(get_string('totalhours', 'block_gestion_hee'), $total, 'badge-success');
-        $remainingclass = $remaining <= 0 ? 'badge-success' : 'local-ga-badge-remaining';
-        $this->content->text .= $this->render_metric(get_string('remaininghours', 'block_gestion_hee'), $remaining, $remainingclass);
-
-        $this->content->text .= html_writer::start_div('mt-2');
-        $this->content->text .= html_writer::link(
-            new moodle_url('/local/gestion_actividades/typeb_upload.php'),
-            get_string('uploadtypeb', 'block_gestion_hee'),
-            ['class' => 'btn btn-sm btn-warning btn-block mb-1']
-        );
-        $this->content->text .= html_writer::link(
-            new moodle_url('/local/gestion_actividades/mycertificates.php'),
-            get_string('mycertificates', 'block_gestion_hee'),
-            ['class' => 'btn btn-sm btn-outline-secondary btn-block mb-1']
-        );
-        $this->content->text .= html_writer::link(
-            new moodle_url('/local/gestion_actividades/portfolio.php'),
-            get_string('myportfolio', 'block_gestion_hee'),
-            ['class' => 'btn btn-sm btn-outline-secondary btn-block']
-        );
-        $this->content->text .= html_writer::end_div();
-
-        $this->content->text .= html_writer::end_div();
 
         return $this->content;
     }
 
-    private function get_typea_hours(int $userid): float {
-        global $DB;
+    private function render_summary(array $summary): string {
+        $typeahours = (float)($summary['typeahours'] ?? 0);
+        $typebhours = (float)($summary['typebhours'] ?? 0);
+        $total = (float)($summary['total'] ?? ($typeahours + $typebhours));
+        $remaining = (float)($summary['remaining'] ?? max(0, 54 - $total));
 
-        $total = 0.0;
+        $html = html_writer::tag('style', '.block-gestion-hee-student-summary .local-ga-badge-remaining{background:#d96c06;color:#fff;}');
+        $html .= html_writer::start_div('block-gestion-hee-student-summary');
 
-        // Fuente principal: certificados Tipo A generados.
-        if ($DB->get_manager()->table_exists(new xmldb_table('local_ga_certificates'))
-            && $DB->get_manager()->table_exists(new xmldb_table('local_ga_workshops'))) {
-            $sql = "SELECT COALESCE(SUM(w.hours), 0)
-                      FROM {local_ga_certificates} c
-                 LEFT JOIN {local_ga_workshops} w ON w.id = c.workshopid
-                     WHERE c.userid = :userid";
-            $total += (float)$DB->get_field_sql($sql, ['userid' => $userid]);
+        if ($total <= 0) {
+            $html .= html_writer::tag('p', get_string('nohoursyet', 'block_gestion_hee'), ['class' => 'text-muted']);
         }
 
-        // Complemento: historial de horas si existe, evitando depender exclusivamente del certificado.
-        if ($DB->get_manager()->table_exists(new xmldb_table('local_ga_hour_history'))) {
-            $sql = "SELECT COALESCE(SUM(hours), 0)
-                      FROM {local_ga_hour_history}
-                     WHERE userid = :userid";
-            $history = (float)$DB->get_field_sql($sql, ['userid' => $userid]);
-            if ($history > $total) {
-                $total = $history;
-            }
+        $html .= $this->render_metric(get_string('typeahours', 'block_gestion_hee'), $typeahours, 'badge-success');
+        $html .= $this->render_metric(get_string('typebhours', 'block_gestion_hee'), $typebhours, 'badge-success');
+        $html .= html_writer::tag('hr', '');
+        $html .= $this->render_metric(get_string('totalhours', 'block_gestion_hee'), $total, 'badge-success');
+
+        $remainingclass = $remaining <= 0 ? 'badge-success' : 'local-ga-badge-remaining';
+        $html .= $this->render_metric(get_string('remaininghours', 'block_gestion_hee'), $remaining, $remainingclass);
+
+        if (!empty($summary['error'])) {
+            $html .= html_writer::div(get_string('temporarilyunavailable', 'block_gestion_hee'), 'text-muted small mt-1');
+        } else if (!empty($summary['stale'])) {
+            $html .= html_writer::div(get_string('cachedstale', 'block_gestion_hee'), 'text-muted small mt-1');
         }
 
-        return round($total, 2);
+        $html .= html_writer::start_div('mt-2');
+        $transfereligible = $typeahours > 32.0 && $typebhours < 22.0;
+        $html .= html_writer::link(
+            new moodle_url('/local/gestion_actividades/transfer_typeb.php'),
+            get_string('transfertypeb', 'block_gestion_hee'),
+            [
+                'class' => 'btn btn-sm ' . ($transfereligible ? 'btn-warning' : 'btn-outline-secondary') . ' btn-block mb-1',
+                'title' => $transfereligible
+                    ? 'Puedes consultar y realizar los traspasos disponibles.'
+                    : 'Consulta aquí las condiciones y los talleres que pueden traspasarse.',
+            ]
+        );
+        $html .= html_writer::link(
+            new moodle_url('/local/gestion_actividades/typeb_upload.php'),
+            'Subir Talleres B (antiguos)',
+            ['class' => 'btn btn-sm btn-outline-secondary btn-block mb-1']
+        );
+        $html .= html_writer::link(
+            new moodle_url('/local/gestion_actividades/portfolio.php'),
+            get_string('myportfolio', 'block_gestion_hee'),
+            ['class' => 'btn btn-sm btn-outline-secondary btn-block']
+        );
+        $html .= html_writer::end_div();
+        $html .= html_writer::end_div();
+
+        return $html;
     }
 
-    private function get_typeb_hours(int $userid): float {
-        global $DB;
+    private function render_teacher_tools(array $summary): string {
+        $active = (int)($summary['activecount'] ?? 0);
+        $finished = (int)($summary['finishedcount'] ?? 0);
 
-        $total = 0.0;
-
-        if ($DB->get_manager()->table_exists(new xmldb_table('local_ga_typeb_certs'))) {
-            $sql = "SELECT COALESCE(SUM(hours), 0)
-                      FROM {local_ga_typeb_certs}
-                     WHERE userid = :userid
-                       AND status = :status";
-            $total = (float)$DB->get_field_sql($sql, ['userid' => $userid, 'status' => 'validated']);
-        }
-
-        return round($total, 2);
+        $html = html_writer::start_div('block-gestion-hee-teacher-tools mt-3 pt-2 border-top');
+        $html .= html_writer::tag('h5', 'Gestionar mis talleres', ['class' => 'mb-2']);
+        $html .= html_writer::link(
+            new moodle_url('/local/gestion_actividades/my_workshops.php', ['view' => 'active']),
+            'Talleres vigentes (' . $active . ')',
+            ['class' => 'btn btn-sm btn-primary btn-block mb-1']
+        );
+        $html .= html_writer::link(
+            new moodle_url('/local/gestion_actividades/my_workshops.php', ['view' => 'finished']),
+            'Mis talleres finalizados (' . $finished . ')',
+            ['class' => 'btn btn-sm btn-outline-secondary btn-block']
+        );
+        $html .= html_writer::end_div();
+        return $html;
     }
 
     private function render_metric(string $label, float $value, string $badgeclass = 'badge-secondary'): string {

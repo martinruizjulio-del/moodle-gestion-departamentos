@@ -9,7 +9,11 @@ $string['typeahours'] = 'Horas Tipo A completadas';
 $string['typebhours'] = 'Horas Tipo B completadas';
 $string['remaininghours'] = 'Horas restantes hasta 54';
 $string['totalhours'] = 'Total reconocido';
-$string['mycertificates'] = 'Mis certificados';
-$string['myportfolio'] = 'Mi portafolio';
+$string['mycertificates'] = 'Mi portafolio HEE';
+$string['myportfolio'] = 'Mi portafolio HEE';
 $string['nohoursyet'] = 'Aún no hay horas reconocidas.';
-$string['uploadtypeb'] = 'Subir certificado Tipo B';
+$string['uploadtypeb'] = 'Subida de certificado Tipo B externo desactivada';
+$string['temporarilyunavailable'] = 'Horas no disponibles temporalmente.';
+$string['cachedstale'] = 'Mostrando datos guardados temporalmente.';
+
+$string['transfertypeb'] = 'Traspasar horas Tipo A a Tipo B';

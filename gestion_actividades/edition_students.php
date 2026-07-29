@@ -9,24 +9,35 @@ header('Pragma: no-cache');
 
 $syscontext = context_system::instance();
 $id = required_param('id', PARAM_INT);
+$mode = optional_param('mode', '', PARAM_ALPHA);
 $studentq = optional_param('studentq', '', PARAM_TEXT);
 $manualadd = optional_param('manualadd', 0, PARAM_INT);
 $markattendance = optional_param('markattendance', 0, PARAM_INT);
 $attended = optional_param('attended', 0, PARAM_BOOL);
 
+
+function local_ga_btn_icon(string $pix, string $label): string {
+    global $OUTPUT;
+    return $OUTPUT->pix_icon($pix, '', 'moodle', ['class' => 'iconsmall mr-1']) . ' ' . $label;
+}
 try {
     $edition = manager::get_workshop_edition($id);
     $workshop = manager::get_workshop((int)$edition->workshopid);
     $course = $DB->get_record('course', ['id' => $workshop->courseid], '*', MUST_EXIST);
     $coursecontext = context_course::instance($course->id);
 
-    if (!manager::can_manage_workshop($course, (int)$USER->id)) {
+    if (!manager::can_manage_edition((int)$edition->id, (int)$USER->id)) {
         throw new required_capability_exception($coursecontext, 'moodle/course:update', 'nopermissions', '');
     }
 
     if (!empty($manualadd) && confirm_sesskey()) {
-        manager::enrol_user_in_edition((int)$id, (int)$manualadd, 'manual');
-        redirect(new moodle_url('/local/gestion_actividades/edition_students.php', ['id' => $id]), get_string('enrolledok', 'local_gestion_actividades'));
+        $enrolresult = manager::enrol_user_in_edition((int)$id, (int)$manualadd, 'manual');
+        redirect(
+            new moodle_url('/local/gestion_actividades/edition_students.php', ['id' => $id]),
+            $enrolresult->message,
+            null,
+            $enrolresult->success ? \core\output\notification::NOTIFY_SUCCESS : \core\output\notification::NOTIFY_WARNING
+        );
     }
 
     if (!empty($markattendance) && confirm_sesskey()) {
@@ -41,6 +52,8 @@ try {
     $PAGE->set_heading(format_string($course->fullname));
 
     echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshop->id, 'editionid' => $edition->id]), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al taller', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
     echo $OUTPUT->heading(get_string('enrolledstudentsattendance', 'local_gestion_actividades') . ': ' . format_string($workshop->code . ' - ' . $workshop->name));
 
     echo html_writer::start_tag('div', ['class' => 'card mb-3']);
@@ -97,9 +110,20 @@ try {
     echo html_writer::start_tag('form', ['method' => 'get', 'class' => 'mb-3']);
     echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'id', 'value' => $id]);
     echo html_writer::label(get_string('studentautocomplete', 'local_gestion_actividades'), 'studentq');
-    echo html_writer::empty_tag('input', ['type' => 'text', 'name' => 'studentq', 'id' => 'studentq', 'value' => s($studentq), 'class' => 'form-control', 'style' => 'max-width:520px', 'autocomplete' => 'on']);
+    echo html_writer::empty_tag('input', ['type' => 'text', 'name' => 'studentq', 'id' => 'studentq', 'value' => s($studentq), 'class' => 'form-control', 'style' => 'max-width:520px', 'list' => 'student-suggestions', 'autocomplete' => 'on']);
     echo html_writer::empty_tag('input', ['type' => 'submit', 'value' => get_string('search'), 'class' => 'btn btn-primary mt-2']);
     echo html_writer::end_tag('form');
+
+    try {
+        $suggestions = manager::search_course_students((int)$course->id, '');
+        echo html_writer::start_tag('datalist', ['id' => 'student-suggestions']);
+        foreach ($suggestions as $su) {
+            echo html_writer::tag('option', '', ['value' => fullname($su) . ' <' . $su->email . '>']);
+        }
+        echo html_writer::end_tag('datalist');
+    } catch (\Throwable $e) {
+        // Autocomplete suggestions are optional.
+    }
 
     if (trim($studentq) !== '') {
         try {
@@ -109,7 +133,7 @@ try {
                 $stable->head = [get_string('user'), get_string('email'), get_string('actions')];
                 foreach ($results as $su) {
                     $addurl = new moodle_url('/local/gestion_actividades/edition_students.php', ['id' => $id, 'manualadd' => $su->id, 'sesskey' => sesskey()]);
-                    $stable->data[] = [fullname($su), s($su->email), html_writer::link($addurl, get_string('addstudenttoworkshop', 'local_gestion_actividades'), ['class' => 'btn btn-secondary btn-sm'])];
+                    $stable->data[] = [fullname($su), s($su->email), html_writer::link($addurl, local_ga_btn_icon('t/add', get_string('addstudenttoworkshop', 'local_gestion_actividades')), ['class' => 'btn btn-secondary btn-sm'])];
                 }
                 echo html_writer::table($stable);
             } else {
@@ -123,10 +147,9 @@ try {
     echo html_writer::end_tag('div');
     echo html_writer::end_tag('div');
 
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshop->id]), get_string('teacherworkshopview', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-    echo ' ';
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => $workshop->id]), get_string('viewworkshop', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-
+    if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+        local_gestion_actividades_enable_interactive_tables();
+    }
     echo $OUTPUT->footer();
 
 } catch (\Throwable $e) {
@@ -138,6 +161,9 @@ try {
     echo $OUTPUT->header();
     echo $OUTPUT->heading(get_string('enrolledstudentsattendance', 'local_gestion_actividades'));
     echo $OUTPUT->notification(get_string('attendance_page_error', 'local_gestion_actividades') . ': ' . s($e->getMessage()), 'error');
-    echo html_writer::link(new moodle_url('/local/gestion_actividades/workshops.php'), get_string('workshops', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+    echo html_writer::link(new moodle_url('/local/gestion_actividades/workshops.php'), local_ga_btn_icon('i/course', get_string('workshops', 'local_gestion_actividades')), ['class' => 'btn btn-secondary']);
+    if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+        local_gestion_actividades_enable_interactive_tables();
+    }
     echo $OUTPUT->footer();
 }

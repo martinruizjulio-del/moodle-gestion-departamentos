@@ -5,27 +5,35 @@ use local_gestion_actividades\local\manager;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $PAGE->set_context($context);
 $PAGE->set_url(new moodle_url('/local/gestion_actividades/workshops.php'));
-$PAGE->set_title(get_string('workshops', 'local_gestion_actividades'));
+$type = optional_param('type', 'typea', PARAM_ALPHA);
+$type = $type === 'typeb' ? 'typeb' : 'typea';
+$typetitle = $type === 'typeb' ? 'Talleres Tipo B' : 'Talleres Tipo A';
+$PAGE->set_title($typetitle);
 $PAGE->set_heading(get_string('title', 'local_gestion_actividades'));
 
+
+function local_ga_btn_icon(string $pix, string $label): string {
+    global $OUTPUT;
+    return $OUTPUT->pix_icon($pix, '', 'moodle', ['class' => 'iconsmall mr-1']) . ' ' . $label;
+}
 echo $OUTPUT->header();
-echo $OUTPUT->heading(get_string('workshopssection', 'local_gestion_actividades'));
-echo html_writer::tag('p', get_string('workshopsworkflowintro', 'local_gestion_actividades'), ['class' => 'alert alert-info']);
-echo html_writer::tag('p', get_string('workshopactions_help', 'local_gestion_actividades'), ['class' => 'alert alert-secondary']);
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
+echo $OUTPUT->heading($typetitle);
 
 echo html_writer::div(
-    html_writer::link(new moodle_url('/local/gestion_actividades/workshop_edit.php'), get_string('newworkshop', 'local_gestion_actividades'), ['class' => 'btn btn-primary']) . ' ' .
-    html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), get_string('dashboard', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
-    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php', ['sesskey' => sesskey()]), get_string('repaircoursevisuals', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']) . ' ' .
-    html_writer::link(new moodle_url('/local/gestion_actividades/cleanup_course_entries.php'), get_string('cleanupcourseentries', 'local_gestion_actividades'), ['class' => 'btn btn-danger']),
+    html_writer::link(new moodle_url('/local/gestion_actividades/workshop_edit.php', ['type' => $type]), local_ga_btn_icon('t/add', get_string('newworkshop', 'local_gestion_actividades')), ['class' => 'btn btn-primary']) . ' ' .
+    html_writer::link(new moodle_url('/local/gestion_actividades/repair_course_visuals.php', ['sesskey' => sesskey()]), local_ga_btn_icon('t/reload', get_string('repaircoursevisuals', 'local_gestion_actividades')), ['class' => 'btn btn-secondary']),
     'mb-3'
 );
 
-$workshops = manager::list_workshops();
+$workshops = manager::list_workshops(0, $type);
 $table = new html_table();
 $table->head = [
     get_string('course'),
@@ -54,17 +62,12 @@ foreach ($workshops as $w) {
 
         $actions = html_writer::link(
             $editurl,
-            $OUTPUT->pix_icon('t/edit', $edittitle),
-            ['class' => 'btn btn-secondary btn-sm', 'title' => $edittitle, 'aria-label' => $edittitle]
-        ) . ' ' .
-        html_writer::link(
-            new moodle_url('/local/gestion_actividades/editions.php', ['workshopid' => $w->id]),
-            $OUTPUT->pix_icon('t/viewdetails', get_string('vieweditions', 'local_gestion_actividades')),
-            ['class' => 'btn btn-secondary btn-sm', 'title' => get_string('vieweditions', 'local_gestion_actividades'), 'aria-label' => get_string('vieweditions', 'local_gestion_actividades')]
+            local_ga_btn_icon('t/edit', 'Configurar taller'),
+            ['class' => 'btn btn-primary btn-sm']
         ) . ' ' .
         html_writer::link(
             new moodle_url('/local/gestion_actividades/workshop_delete.php', ['id' => $w->id]),
-            $OUTPUT->pix_icon('t/delete', get_string('deleteworkshop', 'local_gestion_actividades')),
+            local_ga_btn_icon('t/delete', get_string('deleteworkshop', 'local_gestion_actividades')),
             ['class' => 'btn btn-danger btn-sm', 'title' => get_string('deleteworkshop', 'local_gestion_actividades'), 'aria-label' => get_string('deleteworkshop', 'local_gestion_actividades')]
         );
 
@@ -73,9 +76,12 @@ foreach ($workshops as $w) {
         s($w->code),
         format_string($w->name),
         isset($w->hours) && $w->hours !== null ? round($w->hours, 2) : '-',
-        count($editions),
+        count($editions) > 0 ? count($editions) : 'Pendiente de configurar',
         $actions,
     ];
 }
 echo html_writer::table($table);
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();

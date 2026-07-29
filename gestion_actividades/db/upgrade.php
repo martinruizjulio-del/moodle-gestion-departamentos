@@ -1,6 +1,35 @@
 <?php
 defined('MOODLE_INTERNAL') || die();
 
+
+function local_gestion_actividades_add_index_if_possible($dbman, string $tablename, string $indexname, array $fields): void {
+    $table = new xmldb_table($tablename);
+    if (!$dbman->table_exists($table)) {
+        return;
+    }
+
+    foreach ($fields as $fieldname) {
+        $field = new xmldb_field($fieldname);
+        if (!$dbman->field_exists($table, $field)) {
+            return;
+        }
+    }
+
+    $index = new xmldb_index($indexname, XMLDB_INDEX_NOTUNIQUE, $fields);
+    if ($dbman->index_exists($table, $index)) {
+        return;
+    }
+
+    try {
+        $dbman->add_index($table, $index);
+    } catch (Throwable $e) {
+        // Defensivo: una instalación puede tener ya un índice equivalente con otro nombre.
+        if (function_exists('debugging')) {
+            debugging('No se ha podido crear el índice ' . $indexname . ' en ' . $tablename . ': ' . $e->getMessage(), DEBUG_DEVELOPER);
+        }
+    }
+}
+
 function xmldb_local_gestion_actividades_upgrade($oldversion) {
     global $DB;
 
@@ -520,6 +549,528 @@ function xmldb_local_gestion_actividades_upgrade($oldversion) {
     if ($oldversion < 2026071069) {
         // Fix certificate download: send real PDF, not preview/icon.
         upgrade_plugin_savepoint(true, 2026071069, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071084) {
+        $table = new xmldb_table('local_ga_typeb_certs');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('activityname', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('activitydate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('hours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('authorizedconfirm', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('filename', XMLDB_TYPE_CHAR, '255', null, null, null, null);
+            $table->add_field('status', XMLDB_TYPE_CHAR, '30', null, XMLDB_NOTNULL, null, 'pending');
+            $table->add_field('reviewcomment', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('reviewedby', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timereviewed', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('userid', XMLDB_INDEX_NOTUNIQUE, ['userid']);
+            $table->add_index('status', XMLDB_INDEX_NOTUNIQUE, ['status']);
+            $table->add_index('activitydate', XMLDB_INDEX_NOTUNIQUE, ['activitydate']);
+            $dbman->create_table($table);
+        }
+        upgrade_plugin_savepoint(true, 2026071084, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071086) {
+        $table = new xmldb_table('local_ga_grade_log');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('activityid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('activitykey', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('academicyear', XMLDB_TYPE_CHAR, '30', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('grade', XMLDB_TYPE_NUMBER, '10, 5', null, null, null, null);
+            $table->add_field('importid', XMLDB_TYPE_INTEGER, '10', null, null, null, null);
+            $table->add_field('usermodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('activitykeyuser', XMLDB_INDEX_NOTUNIQUE, ['activitykey', 'userid']);
+            $table->add_index('activityid', XMLDB_INDEX_NOTUNIQUE, ['activityid']);
+            $table->add_index('userid', XMLDB_INDEX_NOTUNIQUE, ['userid']);
+            $table->add_index('importid', XMLDB_INDEX_NOTUNIQUE, ['importid']);
+            $dbman->create_table($table);
+        }
+        upgrade_plugin_savepoint(true, 2026071086, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071092) {
+        global $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        // Remove old student shortcuts wrongly published as course activities. Student access
+        // must live in block_gestion_hee, not inside the visible course section.
+        $oldnames = [
+            'Mi portafolio HEE',
+            'Mi portafolio HEE: horas y certificados',
+            'Mis certificados',
+            'Mis horas',
+            'Ver mis horas',
+        ];
+
+        $targets = [];
+        foreach (['url', 'label', 'page'] as $modname) {
+            if (!$DB->record_exists('modules', ['name' => $modname]) || !$dbman->table_exists(new xmldb_table($modname))) {
+                continue;
+            }
+            foreach ($oldnames as $oldname) {
+                $alias = 'x';
+                $sql = "SELECT cm.id AS cmid
+                          FROM {course_modules} cm
+                          JOIN {modules} m ON m.id = cm.module
+                          JOIN {{$modname}} $alias ON $alias.id = cm.instance
+                         WHERE m.name = :modname
+                           AND " . $DB->sql_like("$alias.name", ':oldname', false);
+                $records = $DB->get_records_sql($sql, [
+                    'modname' => $modname,
+                    'oldname' => $DB->sql_like_escape($oldname) . '%',
+                ]);
+                foreach ($records as $record) {
+                    $targets[(int)$record->cmid] = true;
+                }
+            }
+        }
+
+        if ($DB->record_exists('modules', ['name' => 'url']) && $dbman->table_exists(new xmldb_table('url'))) {
+            $pathfragments = [
+                '/local/gestion_actividades/portfolio.php',
+                '/local/gestion_actividades/mycertificates.php',
+                '/local/gestion_actividades/myhours.php',
+                '/local/gestion_actividades/typeb_upload.php',
+            ];
+            foreach ($pathfragments as $fragment) {
+                $sql = "SELECT cm.id AS cmid
+                          FROM {course_modules} cm
+                          JOIN {modules} m ON m.id = cm.module
+                          JOIN {url} u ON u.id = cm.instance
+                         WHERE m.name = 'url'
+                           AND " . $DB->sql_like('u.externalurl', ':fragment', false);
+                $records = $DB->get_records_sql($sql, ['fragment' => '%' . $DB->sql_like_escape($fragment) . '%']);
+                foreach ($records as $record) {
+                    $targets[(int)$record->cmid] = true;
+                }
+            }
+        }
+
+        foreach (array_keys($targets) as $cmid) {
+            try {
+                course_delete_module((int)$cmid);
+            } catch (Throwable $e) {
+                // Continue. A missing/half-deleted module must not block plugin upgrade.
+            }
+        }
+
+        // If the block plugin is installed, add it automatically to every course that has
+        // Gestión HEE workshops, unless it already exists there.
+        if ($DB->record_exists('block', ['name' => 'gestion_hee']) && $dbman->table_exists(new xmldb_table('local_ga_workshops'))) {
+            $courseids = $DB->get_records_sql("SELECT DISTINCT courseid AS id FROM {local_ga_workshops} WHERE courseid > 1");
+            foreach ($courseids as $courseidrow) {
+                $courseid = (int)$courseidrow->id;
+                $context = context_course::instance($courseid, IGNORE_MISSING);
+                if (!$context) {
+                    continue;
+                }
+                $exists = $DB->record_exists_select('block_instances',
+                    'blockname = :blockname AND parentcontextid = :parentcontextid',
+                    ['blockname' => 'gestion_hee', 'parentcontextid' => $context->id]
+                );
+                if ($exists) {
+                    continue;
+                }
+                $block = (object)[
+                    'blockname' => 'gestion_hee',
+                    'parentcontextid' => $context->id,
+                    'showinsubcontexts' => 0,
+                    'pagetypepattern' => 'course-view-*',
+                    'subpagepattern' => null,
+                    'defaultregion' => 'side-pre',
+                    'defaultweight' => 0,
+                    'configdata' => '',
+                    'timecreated' => time(),
+                    'timemodified' => time(),
+                ];
+                $columns = $DB->get_columns('block_instances');
+                foreach (array_keys((array)$block) as $field) {
+                    if (!isset($columns[$field])) {
+                        unset($block->$field);
+                    }
+                }
+                $DB->insert_record('block_instances', $block);
+                rebuild_course_cache($courseid, true);
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026071092, 'local', 'gestion_actividades');
+    }
+
+
+
+    if ($oldversion < 2026071113) {
+        $table = new xmldb_table('local_ga_workshop_editions');
+
+        $field = new xmldb_field('requiredassigncmid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'requiredcmid');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        $field = new xmldb_field('requiredquizcmid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'requiredassigncmid');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071113, 'local', 'gestion_actividades');
+    }
+
+
+
+    if ($oldversion < 2026071115) {
+        $table = new xmldb_table('local_ga_workshop_editions');
+
+        $fields = [
+            new xmldb_field('taskdescription', XMLDB_TYPE_TEXT, null, null, null, null, null, 'tasknumericgrade'),
+            new xmldb_field('taskurl', XMLDB_TYPE_TEXT, null, null, null, null, null, 'taskdescription'),
+            new xmldb_field('taskfileitemid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'taskurl'),
+            new xmldb_field('taskduedate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'taskfileitemid'),
+        ];
+
+        foreach ($fields as $field) {
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        $table = new xmldb_table('local_ga_task_submissions');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('editionid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('fileitemid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('grade', XMLDB_TYPE_NUMBER, '10, 2', null, null, null, null);
+            $table->add_field('gradedby', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timegraded', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('status', XMLDB_TYPE_CHAR, '30', null, XMLDB_NOTNULL, null, 'submitted');
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('edition_user', XMLDB_INDEX_UNIQUE, ['editionid', 'userid']);
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071115, 'local', 'gestion_actividades');
+    }
+
+
+
+    if ($oldversion < 2026071123) {
+        $table = new xmldb_table('local_ga_typeb_certs');
+        $field = new xmldb_field('activitydescription', XMLDB_TYPE_TEXT, null, null, null, null, null, 'hours');
+        if ($dbman->table_exists($table) && !$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071123, 'local', 'gestion_actividades');
+    }
+
+
+
+    if ($oldversion < 2026071125) {
+        // Índices usados por block_gestion_hee para cálculos cacheados de horas.
+        // Se crean aquí porque las tablas pertenecen a local_gestion_actividades.
+        local_gestion_actividades_add_index_if_possible($dbman, 'local_ga_certificates', 'userid', ['userid']);
+        local_gestion_actividades_add_index_if_possible($dbman, 'local_ga_hour_history', 'useridx', ['userid']);
+        local_gestion_actividades_add_index_if_possible($dbman, 'local_ga_typeb_certs', 'userid', ['userid']);
+        local_gestion_actividades_add_index_if_possible($dbman, 'local_ga_typeb_certs', 'userstatus', ['userid', 'status']);
+
+        upgrade_plugin_savepoint(true, 2026071125, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071128) {
+        $table = new xmldb_table('local_ga_institutional_hours');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('email', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+            $table->add_field('fullname', XMLDB_TYPE_CHAR, '255', null, null, null, null);
+            $table->add_field('courselevel', XMLDB_TYPE_CHAR, '50', null, null, null, null);
+            $table->add_field('groupname', XMLDB_TYPE_CHAR, '100', null, null, null, null);
+            $table->add_field('typeahours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('typebhours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('source', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, 'Reconocimiento institucional');
+            $table->add_field('importid', XMLDB_TYPE_CHAR, '64', null, null, null, null);
+            $table->add_field('originalrow', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('rawdata', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('usermodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('userid', XMLDB_INDEX_UNIQUE, ['userid']);
+            $table->add_index('email', XMLDB_INDEX_NOTUNIQUE, ['email']);
+            $dbman->create_table($table);
+        } else {
+            $fields = [
+                new xmldb_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'id'),
+                new xmldb_field('email', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, '', 'userid'),
+                new xmldb_field('fullname', XMLDB_TYPE_CHAR, '255', null, null, null, null, 'email'),
+                new xmldb_field('courselevel', XMLDB_TYPE_CHAR, '50', null, null, null, null, 'fullname'),
+                new xmldb_field('groupname', XMLDB_TYPE_CHAR, '100', null, null, null, null, 'courselevel'),
+                new xmldb_field('typeahours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0', 'groupname'),
+                new xmldb_field('typebhours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0', 'typeahours'),
+                new xmldb_field('source', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, 'Reconocimiento institucional', 'typebhours'),
+                new xmldb_field('importid', XMLDB_TYPE_CHAR, '64', null, null, null, null, 'source'),
+                new xmldb_field('originalrow', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'importid'),
+                new xmldb_field('rawdata', XMLDB_TYPE_TEXT, null, null, null, null, null, 'originalrow'),
+                new xmldb_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'rawdata'),
+                new xmldb_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'timecreated'),
+                new xmldb_field('usermodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'timemodified'),
+            ];
+            foreach ($fields as $field) {
+                if (!$dbman->field_exists($table, $field)) {
+                    $dbman->add_field($table, $field);
+                }
+            }
+            $index = new xmldb_index('userid', XMLDB_INDEX_UNIQUE, ['userid']);
+            if (!$dbman->index_exists($table, $index)) {
+                $dbman->add_index($table, $index);
+            }
+            $index = new xmldb_index('email', XMLDB_INDEX_NOTUNIQUE, ['email']);
+            if (!$dbman->index_exists($table, $index)) {
+                $dbman->add_index($table, $index);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026071128, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071132) {
+        $table = new xmldb_table('local_ga_task_submissions');
+        if ($dbman->table_exists($table)) {
+            $fields = [
+                new xmldb_field('grade', XMLDB_TYPE_NUMBER, '10, 2', null, null, null, null, 'fileitemid'),
+                new xmldb_field('gradedby', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'grade'),
+                new xmldb_field('timegraded', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'gradedby'),
+            ];
+            foreach ($fields as $field) {
+                if (!$dbman->field_exists($table, $field)) {
+                    $dbman->add_field($table, $field);
+                }
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026071132, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071134) {
+        $table = new xmldb_table('local_ga_institutional_hours');
+        if ($dbman->table_exists($table)) {
+            $field = new xmldb_field('taskgrade', XMLDB_TYPE_NUMBER, '10, 2', null, null, null, null, 'typebhours');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026071134, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071135) {
+        $table = new xmldb_table('local_ga_workshops');
+        if ($dbman->table_exists($table)) {
+            $field = new xmldb_field('workshoptype', XMLDB_TYPE_CHAR, '10', null, XMLDB_NOTNULL, null, 'typea', 'hours');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        $table = new xmldb_table('local_ga_certificates');
+        if ($dbman->table_exists($table)) {
+            $field = new xmldb_field('certificatetype', XMLDB_TYPE_CHAR, '10', null, XMLDB_NOTNULL, null, 'typea', 'editionid');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+            $index = new xmldb_index('certificatetype', XMLDB_INDEX_NOTUNIQUE, ['certificatetype']);
+            if (!$dbman->index_exists($table, $index)) {
+                $dbman->add_index($table, $index);
+            }
+        }
+
+        $table = new xmldb_table('local_ga_typeb_reflections');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('editionid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('reflectiontext', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('editionuser', XMLDB_INDEX_UNIQUE, ['editionid', 'userid']);
+            $table->add_index('userid', XMLDB_INDEX_NOTUNIQUE, ['userid']);
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071135, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071137) {
+        $table = new xmldb_table('local_ga_typeb_transfers');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('certificateid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('workshopid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('editionid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('hours', XMLDB_TYPE_NUMBER, '10, 2', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('reflectiontext', XMLDB_TYPE_TEXT, null, null, null, null, null);
+            $table->add_field('status', XMLDB_TYPE_CHAR, '20', null, XMLDB_NOTNULL, null, 'active');
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('certificateid', XMLDB_INDEX_UNIQUE, ['certificateid']);
+            $table->add_index('userid', XMLDB_INDEX_NOTUNIQUE, ['userid']);
+            $table->add_index('userstatus', XMLDB_INDEX_NOTUNIQUE, ['userid', 'status']);
+            $table->add_index('editionid', XMLDB_INDEX_NOTUNIQUE, ['editionid']);
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071137, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071400) {
+        $table = new xmldb_table('local_ga_course_settings');
+        if (!$dbman->table_exists($table)) {
+            $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+            $table->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('selfassessmentcmid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('usermodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+            $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+            $table->add_index('courseid', XMLDB_INDEX_UNIQUE, ['courseid']);
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026071400, 'local', 'gestion_actividades');
+    }
+
+    if ($oldversion < 2026071401) {
+        $table = new xmldb_table('local_ga_institutional_hours');
+        if ($dbman->table_exists($table)) {
+            $field = new xmldb_field('typebreflection', XMLDB_TYPE_TEXT, null, null, null, null, null, 'taskgrade');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+            $field = new xmldb_field('typebreflectionmodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0', 'typebreflection');
+            if (!$dbman->field_exists($table, $field)) {
+                $dbman->add_field($table, $field);
+            }
+        }
+
+        // Desde esta versión todos los talleres Tipo A requieren una tarea.
+        $editiontable = new xmldb_table('local_ga_workshop_editions');
+        $workshoptable = new xmldb_table('local_ga_workshops');
+        if ($dbman->table_exists($editiontable) && $dbman->table_exists($workshoptable)) {
+            $DB->execute("UPDATE {local_ga_workshop_editions}
+                            SET requiredmodname = 'assign', activitycreationtype = 'assign'
+                          WHERE workshopid IN (
+                                SELECT id
+                                  FROM {local_ga_workshops}
+                                 WHERE workshoptype = 'typea' OR workshoptype IS NULL OR workshoptype = ''
+                          )");
+            $DB->execute("UPDATE {local_ga_workshop_editions}
+                            SET requiredmodname = '', activitycreationtype = '', requiredcmid = 0,
+                                requiredassigncmid = 0, requiredquizcmid = 0
+                          WHERE workshopid IN (
+                                SELECT id
+                                  FROM {local_ga_workshops}
+                                 WHERE workshoptype = 'typeb'
+                          )");
+        }
+
+        upgrade_plugin_savepoint(true, 2026071401, 'local', 'gestion_actividades');
+    }
+
+    if ($oldversion < 2026071402) {
+        // Create the hidden 54-hour grade item, populate it in bulk and apply the
+        // access restriction to any self-assessment quiz already selected.
+        try {
+            $courses = \local_gestion_actividades\local\grade_manager::get_managed_courses();
+            foreach ($courses as $course) {
+                $courseid = (int)$course->id;
+                \local_gestion_actividades\local\grade_manager::sync_course_safely($courseid);
+                \local_gestion_actividades\local\grade_manager::ensure_selfassessment_availability($courseid);
+            }
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('La migración del criterio de autoevaluación HEE continuará de forma diferida: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026071402, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071404) {
+        // Reapply the 54-hour restriction using the Moodle section API so the
+        // containing section is completely hidden and course caches are purged correctly.
+        try {
+            $courses = \local_gestion_actividades\local\grade_manager::get_managed_courses();
+            foreach ($courses as $course) {
+                \local_gestion_actividades\local\grade_manager::ensure_selfassessment_availability((int)$course->id);
+            }
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('La restricción de sección de autoevaluación HEE se reintentará al guardar el selector: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026071404, 'local', 'gestion_actividades');
+    }
+
+    if ($oldversion < 2026071405) {
+        // Repair course-card section sequences and reapply the self-assessment section condition.
+        try {
+            \local_gestion_actividades\local\manager::ensure_all_workshop_course_visuals();
+            \local_gestion_actividades\local\grade_manager::repair_configured_selfassessment_availability();
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('La reparación visual HEE puede repetirse desde el panel: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026071405, 'local', 'gestion_actividades');
+    }
+
+    if ($oldversion < 2026071411) {
+        // Rebuild the canonical hour summaries and force Autoevaluación to the final course position.
+        try {
+            \local_gestion_actividades\local\manager::ensure_all_workshop_course_visuals();
+            \local_gestion_actividades\local\grade_manager::repair_configured_selfassessment_availability();
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('La normalización de horas y orden de secciones HEE puede repetirse desde el panel: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        upgrade_plugin_savepoint(true, 2026071411, 'local', 'gestion_actividades');
+    }
+
+
+    if ($oldversion < 2026071420) {
+        // Rebuild course cards so past workshops show the closed state even
+        // before the per-user AMD updater runs.
+        try {
+            \local_gestion_actividades\local\manager::ensure_all_workshop_course_visuals();
+        } catch (\Throwable $e) {
+            debugging('No se pudieron reconstruir las tarjetas HEE: ' . $e->getMessage(), DEBUG_DEVELOPER);
+        }
+        upgrade_plugin_savepoint(true, 2026071420, 'local', 'gestion_actividades');
     }
 
     return true;

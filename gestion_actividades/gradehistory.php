@@ -15,15 +15,23 @@ $PAGE->set_url(new moodle_url('/local/gestion_actividades/gradehistory.php', ['i
 $PAGE->set_title(get_string('gradehistory', 'local_gestion_actividades'));
 $PAGE->set_heading(get_string('title', 'local_gestion_actividades'));
 
-$records = manager::get_grade_history($activity->activitykey, 2000);
+$records = method_exists(manager::class, 'get_grade_import_log') ? manager::get_grade_import_log($activity->activitykey, 2000) : [];
+if (!$records) {
+    $records = manager::get_grade_history($activity->activitykey, 2000);
+}
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('gradehistory', 'local_gestion_actividades') . ': ' . format_string($activity->name));
 echo html_writer::div(get_string('gradehistoryinfo', 'local_gestion_actividades'), 'alert alert-info');
 echo html_writer::link(new moodle_url('/local/gestion_actividades/view.php', ['id' => $id]), get_string('return', 'local_gestion_actividades'), ['class' => 'btn btn-secondary mb-3']);
 
 if (!$records) {
     echo $OUTPUT->notification(get_string('nogradehistory', 'local_gestion_actividades'), 'info');
+    if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+        local_gestion_actividades_enable_interactive_tables();
+    }
     echo $OUTPUT->footer();
     exit;
 }
@@ -34,7 +42,7 @@ $table->head = [
     get_string('fullname', 'local_gestion_actividades'),
     'Email',
     get_string('grade', 'local_gestion_actividades'),
-    get_string('timeupdated', 'local_gestion_actividades'),
+    'Fecha de importación/actualización',
 ];
 $table->data = [];
 foreach ($records as $r) {
@@ -47,4 +55,7 @@ foreach ($records as $r) {
     ];
 }
 echo html_writer::table($table);
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();

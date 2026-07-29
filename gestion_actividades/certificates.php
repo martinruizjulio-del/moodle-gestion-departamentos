@@ -5,12 +5,15 @@ use local_gestion_actividades\local\manager;
 
 $editionid = required_param('editionid', PARAM_INT);
 require_login();
-require_capability('local/gestion_actividades:manage', context_system::instance());
 
 $edition = manager::get_workshop_edition($editionid);
 $workshop = manager::get_workshop((int)$edition->workshopid);
 $course = $DB->get_record('course', ['id' => $workshop->courseid], '*', MUST_EXIST);
 $coursecontext = context_course::instance($course->id);
+
+if (!manager::can_manage_workshop_instance((int)$workshop->id, (int)$USER->id)) {
+    throw new required_capability_exception($coursecontext, 'moodle/course:update', 'nopermissions', '');
+}
 
 $PAGE->set_context($coursecontext);
 $PAGE->set_course($course);
@@ -19,13 +22,13 @@ $PAGE->set_title(get_string('certificates', 'local_gestion_actividades'));
 $PAGE->set_heading(format_string($course->fullname));
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshop->id]), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al taller', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('certificates', 'local_gestion_actividades') . ': ' . format_string($workshop->code . ' - ' . $workshop->name));
 
 echo html_writer::link(new moodle_url('/local/gestion_actividades/generate_certificates.php', ['id' => $editionid, 'sesskey' => sesskey()]), get_string('generatecertificates', 'local_gestion_actividades'), ['class' => 'btn btn-primary']);
 echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/certificate_template.php'), get_string('certificatetemplate', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
-echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshop->id]), get_string('teacherworkshopview', 'local_gestion_actividades'), ['class' => 'btn btn-secondary']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshop->id]), 'Volver al taller', ['class' => 'btn btn-secondary']);
 
 $certificates = manager::list_edition_certificates((int)$editionid);
 if ($certificates) {
@@ -46,4 +49,7 @@ if ($certificates) {
     echo $OUTPUT->notification(get_string('nocertificatesyet', 'local_gestion_actividades'), 'info');
 }
 
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();

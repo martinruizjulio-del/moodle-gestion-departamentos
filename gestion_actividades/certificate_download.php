@@ -1,6 +1,8 @@
 <?php
 require_once(__DIR__ . '/../../config.php');
 
+use local_gestion_actividades\local\manager;
+
 $id = required_param('id', PARAM_INT);
 require_login();
 
@@ -8,9 +10,9 @@ $cert = $DB->get_record('local_ga_certificates', ['id' => $id], '*', MUST_EXIST)
 $course = $DB->get_record('course', ['id' => (int)$cert->courseid], '*', MUST_EXIST);
 $context = context_course::instance((int)$course->id);
 
-$canmanage = has_capability('local/gestion_actividades:manage', context_system::instance());
+$canmanage = manager::can_manage_workshop_instance((int)$cert->workshopid, (int)$USER->id);
 if ((int)$cert->userid !== (int)$USER->id && !$canmanage) {
-    throw new required_capability_exception($context, 'local/gestion_actividades:manage', 'nopermissions', '');
+    throw new required_capability_exception($context, 'moodle/course:update', 'nopermissions', '');
 }
 
 $fs = get_file_storage();

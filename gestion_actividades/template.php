@@ -3,7 +3,9 @@ require_once(__DIR__ . '/../../config.php');
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $type = optional_param('type', 'users', PARAM_ALPHA);
 
@@ -19,4 +21,9 @@ if ($type === 'users') {
     $content .= "alumno001@universidad.es;Ana;Garcia;9.4\n";
 }
 
-send_file($content, $filename, 0, 0, true, true, 'text/csv');
+\core\session\manager::write_close();
+header('Content-Type: text/csv; charset=utf-8');
+header('Content-Disposition: attachment; filename="' . clean_filename($filename) . '"');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+echo "\xEF\xBB\xBF" . $content;
+exit;

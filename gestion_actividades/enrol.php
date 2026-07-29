@@ -9,7 +9,6 @@ $workshop = manager::get_workshop((int)$edition->workshopid);
 $course = $DB->get_record('course', ['id' => $workshop->courseid], '*', MUST_EXIST);
 
 require_login($course);
-require_sesskey();
 
 $result = manager::enrol_user_in_edition($editionid, (int)$USER->id, 'self');
 

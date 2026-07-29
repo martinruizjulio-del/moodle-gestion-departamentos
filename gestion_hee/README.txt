@@ -1,24 +1,7 @@
-Bloque Moodle: Gestión HEE - Alumno
-===================================
+block_gestion_hee v1.0.12-alpha
 
-Nombre interno:
-block_gestion_hee
+Bloque lateral ligero con resumen de horas HEE y caché MUC por usuario.
+La opción de traspaso A→B permanece siempre visible; la pantalla de traspasos valida las condiciones y los talleres completos disponibles.
+Compatible con local_gestion_actividades v1.5.62-alpha.
 
-Carpeta Moodle:
-blocks/gestion_hee
-
-Nombre visible:
-Gestión HEE - Alumno
-
-Contenido:
-- Horas Tipo A completadas
-- Horas Tipo B completadas
-- Total reconocido
-- Horas restantes hasta 54
-- Enlaces a Mis certificados y Mi portafolio
-
-Actualización:
-El bloque calcula los datos directamente al cargar la página, por lo que se actualiza cada vez que el alumno entra, sin intervención manual.
-
-Requiere:
-local_gestion_actividades instalado.
+v1.0.13-alpha: revisión integral de estabilidad, enlaces, caché MUC e invalidación por usuario; sin cambios funcionales adicionales.

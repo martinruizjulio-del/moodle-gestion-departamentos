@@ -9,7 +9,9 @@ require_capability('local/gestion_actividades:view', $context);
 
 $userid = optional_param('userid', $USER->id, PARAM_INT);
 if ($userid !== $USER->id) {
-    require_capability('local/gestion_actividades:manage', $context);
+    if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 }
 
 $user = $DB->get_record('user', ['id' => $userid], '*', MUST_EXIST);

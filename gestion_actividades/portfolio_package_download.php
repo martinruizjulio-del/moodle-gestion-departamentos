@@ -9,7 +9,7 @@ $userid = optional_param('userid', 0, PARAM_INT);
 require_login();
 
 $context = context_system::instance();
-$canmanage = has_capability('local/gestion_actividades:manage', $context);
+$canmanage = \local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id);
 
 if ($userid <= 0) {
     $userid = (int)$USER->id;
@@ -32,7 +32,6 @@ $mainpath = $tempdir . '/' . $mainname;
 file_put_contents($mainpath, $mainpdf);
 $files[$mainname] = $mainpath;
 
-// Anexos Tipo A: certificados generados por el sistema, ordenados por fecha de emisión.
 $typeacerts = method_exists(manager::class, 'list_user_certificates') ? manager::list_user_certificates((int)$userid) : [];
 usort($typeacerts, function($a, $b) {
     return ((int)($a->timeissued ?? 0)) <=> ((int)($b->timeissued ?? 0));
@@ -41,34 +40,24 @@ usort($typeacerts, function($a, $b) {
 $n = 1;
 foreach ($typeacerts as $cert) {
     $course = $DB->get_record('course', ['id' => (int)$cert->courseid], '*', IGNORE_MISSING);
-    if (!$course) {
-        continue;
-    }
+    if (!$course) { continue; }
     $coursecontext = context_course::instance((int)$course->id, IGNORE_MISSING);
-    if (!$coursecontext) {
-        continue;
-    }
+    if (!$coursecontext) { continue; }
     $fs = get_file_storage();
     $file = $fs->get_file($coursecontext->id, 'local_gestion_actividades', 'certificate', (int)$cert->id, '/', $cert->filename);
     if (!$file || $file->is_directory()) {
         $area = $fs->get_area_files($coursecontext->id, 'local_gestion_actividades', 'certificate', (int)$cert->id, 'filename', false);
         foreach ($area as $candidate) {
-            if (!$candidate->is_directory()) {
-                $file = $candidate;
-                break;
-            }
+            if (!$candidate->is_directory()) { $file = $candidate; break; }
         }
     }
-    if (!$file || $file->is_directory()) {
-        continue;
-    }
+    if (!$file || $file->is_directory()) { continue; }
     $name = sprintf('01_Tipo_A/%02d_%s_%s.pdf', $n++, userdate((int)$cert->timeissued, '%Y%m%d'), clean_filename(($cert->workshopcode ?? 'certificado') . '_' . ($cert->workshopname ?? 'tipo_a')));
     $path = $tempdir . '/tipoa_' . $n . '.pdf';
     $file->copy_content_to($path);
     $files[$name] = $path;
 }
 
-// Anexos Tipo B: PDFs subidos por el alumno, ordenados por fecha de actividad.
 $typebcerts = portfolio_typeb::list_for_user((int)$userid);
 usort($typebcerts, function($a, $b) {
     return ((int)($a->activitydate ?? 0)) <=> ((int)($b->activitydate ?? 0));
@@ -81,15 +70,10 @@ foreach ($typebcerts as $cert) {
     if (!$file || $file->is_directory()) {
         $area = $fs->get_area_files($context->id, 'local_gestion_actividades', 'typeb_certificate', (int)$cert->id, 'filename', false);
         foreach ($area as $candidate) {
-            if (!$candidate->is_directory()) {
-                $file = $candidate;
-                break;
-            }
+            if (!$candidate->is_directory()) { $file = $candidate; break; }
         }
     }
-    if (!$file || $file->is_directory()) {
-        continue;
-    }
+    if (!$file || $file->is_directory()) { continue; }
     $name = sprintf('02_Tipo_B/%02d_%s_%s.pdf', $n++, userdate((int)$cert->activitydate, '%Y%m%d'), clean_filename($cert->activityname));
     $path = $tempdir . '/tipob_' . $n . '.pdf';
     $file->copy_content_to($path);

@@ -4,7 +4,9 @@ require_once(__DIR__ . '/../../config.php');
 use local_gestion_actividades\local\manager;
 
 require_login();
-require_capability('local/gestion_actividades:manage', context_system::instance());
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 if (data_submitted() && confirm_sesskey()) {
     $html = required_param('templatehtml', PARAM_RAW);
@@ -18,6 +20,8 @@ $PAGE->set_title(get_string('certificatetemplate', 'local_gestion_actividades'))
 $PAGE->set_heading(get_string('title', 'local_gestion_actividades'));
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('certificatetemplate', 'local_gestion_actividades'));
 
 echo html_writer::tag('p', get_string('certificatetemplate_help', 'local_gestion_actividades'), ['class' => 'alert alert-info']);

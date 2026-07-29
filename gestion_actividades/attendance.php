@@ -5,7 +5,9 @@ use local_gestion_actividades\local\manager;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $id = required_param('id', PARAM_INT);
 $activity = manager::get_activity($id);
@@ -25,6 +27,9 @@ echo html_writer::div(
 
 if (!manager::attendance_tables_available()) {
     echo $OUTPUT->notification(get_string('attendancenotavailable', 'local_gestion_actividades'), 'warning');
+    if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+        local_gestion_actividades_enable_interactive_tables();
+    }
     echo $OUTPUT->footer();
     exit;
 }
@@ -52,6 +57,9 @@ if (data_submitted() && confirm_sesskey()) {
 $sessions = manager::get_attendance_sessions((int)$activity->courseid);
 if (!$sessions) {
     echo $OUTPUT->notification(get_string('noattendancesessions', 'local_gestion_actividades'), 'info');
+    if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+        local_gestion_actividades_enable_interactive_tables();
+    }
     echo $OUTPUT->footer();
     exit;
 }
@@ -72,4 +80,7 @@ echo html_writer::select($options, 'sessionid', '', false, ['class' => 'form-con
 echo html_writer::empty_tag('input', ['type' => 'submit', 'class' => 'btn btn-success', 'value' => get_string('syncattendance', 'local_gestion_actividades')]);
 echo html_writer::end_tag('form');
 
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();

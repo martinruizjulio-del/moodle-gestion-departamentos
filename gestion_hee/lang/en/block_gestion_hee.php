@@ -9,7 +9,11 @@ $string['typeahours'] = 'Completed Type A hours';
 $string['typebhours'] = 'Completed Type B hours';
 $string['remaininghours'] = 'Remaining hours to 54';
 $string['totalhours'] = 'Recognised total';
-$string['mycertificates'] = 'My certificates';
-$string['myportfolio'] = 'My portfolio';
+$string['mycertificates'] = 'My HEE portfolio';
+$string['myportfolio'] = 'My HEE portfolio';
 $string['nohoursyet'] = 'No recognised hours yet.';
-$string['uploadtypeb'] = 'Upload Type B certificate';
+$string['uploadtypeb'] = 'External Type B upload disabled';
+$string['temporarilyunavailable'] = 'Hours temporarily unavailable.';
+$string['cachedstale'] = 'Showing temporarily cached data.';
+
+$string['transfertypeb'] = 'Transfer Type A hours to Type B';

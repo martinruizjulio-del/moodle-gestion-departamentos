@@ -8,7 +8,7 @@ class portfolio_pdf {
         return '<h1 style="text-align:center;color:#2b4b1e;font-size:26pt;">Portafolio de certificados</h1>' .
                '<h2 style="text-align:center;color:#222;font-size:18pt;">{alumno}</h2>' .
                '<p style="text-align:center;font-size:13pt;">Curso: <strong>{curso}</strong></p>' .
-               '<p style="text-align:center;font-size:12pt;line-height:1.6;">Horas Tipo A: <strong>{horas_tipo_a}</strong><br>Horas Tipo B validadas: <strong>{horas_tipo_b}</strong><br>Total reconocido: <strong>{horas_total}</strong></p>' .
+               '<p style="text-align:center;font-size:12pt;line-height:1.6;">Horas Tipo A: <strong>{horas_tipo_a}</strong><br>Horas Tipo B: <strong>{horas_tipo_b}</strong><br>Total reconocido: <strong>{horas_total}</strong></p>' .
                '<p style="text-align:center;color:#666;font-size:10pt;">Fecha de emisión: {fecha_emision}</p>';
     }
 
@@ -52,6 +52,14 @@ class portfolio_pdf {
             return $certs;
         }
         return [];
+    }
+
+    public static function sum_certificate_hours(array $certs): float {
+        $sum = 0.0;
+        foreach ($certs as $c) {
+            $sum += (float)($c->hours ?? 0);
+        }
+        return $sum;
     }
 
     public static function get_typeb_certificates(int $userid): array {
@@ -131,9 +139,11 @@ class portfolio_pdf {
 
         $user = $DB->get_record('user', ['id' => $userid, 'deleted' => 0], '*', MUST_EXIST);
         $typeacerts = self::get_typea_certificates($userid);
+        $typebworkshopcerts = manager::list_user_typeb_workshop_certificates($userid);
         $typebcerts = self::get_typeb_certificates($userid);
         $typeahours = self::get_typea_hours($userid);
-        $typebhours = portfolio_typeb::total_validated_hours($userid);
+        $institutional = class_exists('local_gestion_actividades\\local\\institutional_hours') ? institutional_hours::list_for_user($userid) : [];
+        $typebhours = portfolio_typeb::total_validated_hours($userid) + self::sum_certificate_hours($typebworkshopcerts) + (class_exists('local_gestion_actividades\\local\\institutional_hours') ? institutional_hours::total_typeb_hours($userid) : 0.0);
         $course = self::detect_course_label($typeacerts, $typebcerts);
 
         $pdf = new \pdf('P', 'mm', 'A4', true, 'UTF-8', false);
@@ -153,7 +163,7 @@ class portfolio_pdf {
         $pdf->SetFont('helvetica', 'B', 20);
         $pdf->writeHTML('<h1 style="color:#2b4b1e;">Índice</h1>', true, false, true, false, '');
         $pdf->SetFont('helvetica', '', 12);
-        $pdf->writeHTML('<ol style="font-size:12pt;line-height:1.7;"><li>Portada</li><li>Resumen de horas</li><li>Certificados de Talleres Tipo A</li><li>Certificados de Talleres Tipo B</li></ol>', true, false, true, false, '');
+        $pdf->writeHTML('<ol style="font-size:12pt;line-height:1.7;"><li>Portada</li><li>Resumen de horas</li><li>Certificados de Talleres Tipo A</li><li>Talleres Tipo B y traspasos</li><li>Reconocimiento institucional</li></ol>', true, false, true, false, '');
 
         self::add_ucv_page($pdf);
         $pdf->SetFont('helvetica', 'B', 18);
@@ -161,7 +171,7 @@ class portfolio_pdf {
         $pdf->SetFont('helvetica', '', 11);
         self::write_certificate_card($pdf, 'Horas reconocidas', [
             'Talleres Tipo A' => self::format_hours($typeahours),
-            'Talleres Tipo B validados' => self::format_hours($typebhours),
+            'Talleres Tipo B' => self::format_hours($typebhours),
             'Total reconocido' => self::format_hours($typeahours + $typebhours),
         ]);
 
@@ -181,19 +191,53 @@ class portfolio_pdf {
         }
 
         self::add_ucv_page($pdf);
-        $pdf->writeHTML('<h1 style="color:#2b4b1e;">Certificados de Talleres Tipo B</h1>', true, false, true, false, '');
-        if ($typebcerts) {
-            foreach ($typebcerts as $c) {
-                self::write_certificate_card($pdf, (string)$c->activityname, [
-                    'Fecha' => !empty($c->activitydate) ? userdate((int)$c->activitydate, get_string('strftimedatefullshort', 'langconfig')) : '-',
-                    'Horas' => self::format_hours((float)$c->hours),
-                    'Estado' => self::typeb_status_label((string)$c->status),
-                    'Declaración normativa' => !empty($c->authorizedconfirm) ? 'Confirmada' : 'No confirmada',
-                    'Comentario' => !empty($c->reviewcomment) ? (string)$c->reviewcomment : '-',
+        $pdf->writeHTML('<h1 style="color:#2b4b1e;">Talleres Tipo B</h1>', true, false, true, false, '');
+        if ($typebworkshopcerts) {
+            foreach ($typebworkshopcerts as $c) {
+                self::write_certificate_card($pdf, trim(($c->workshopcode ?? '') . ' - ' . ($c->workshopname ?? '')), [
+                    'Curso' => $c->coursename ?? '-',
+                    'Horas' => !empty($c->hours) ? self::format_hours((float)$c->hours) : '-',
+                    'Asistencia' => 'Confirmada',
+                    'Texto alumno' => !empty($c->reflectiontext) ? (string)$c->reflectiontext : '-',
+                    'Fecha de emisión' => !empty($c->timeissued) ? userdate((int)$c->timeissued, get_string('strftimedatefullshort', 'langconfig')) : '-',
                 ]);
             }
         } else {
-            $pdf->writeHTML('<p>No constan certificados Tipo B subidos.</p>', true, false, true, false, '');
+            $pdf->writeHTML('<p>No constan certificados de Talleres Tipo B.</p>', true, false, true, false, '');
+        }
+
+        // Flujo antiguo de certificados Tipo B externos eliminado del portafolio PDF.
+
+        self::add_ucv_page($pdf);
+        $pdf->writeHTML('<h1 style="color:#2b4b1e;">Reconocimiento institucional</h1>', true, false, true, false, '');
+        if (!empty($institutional)) {
+            foreach ($institutional as $r) {
+                if ((float)$r->typeahours > 0) {
+                    self::write_certificate_card($pdf, 'Reconocimiento institucional - Horas Tipo A', [
+                        'Origen' => $r->source ?? 'Reconocimiento institucional',
+                        'Curso' => $r->courselevel ?? '-',
+                        'Grupo' => $r->groupname ?? '-',
+                        'Horas' => self::format_hours((float)$r->typeahours),
+                        'Asistencia' => 'Confirmada',
+                        'Tarea' => 'Entregada',
+                        'Nota Taller A' => ($r->taskgrade !== null && $r->taskgrade !== '') ? format_float((float)$r->taskgrade, 2, true) : '-',
+                    ]);
+                }
+                if ((float)$r->typebhours > 0) {
+                    self::write_certificate_card($pdf, 'Reconocimiento institucional - Horas Tipo B', [
+                        'Origen' => $r->source ?? 'Reconocimiento institucional',
+                        'Curso' => $r->courselevel ?? '-',
+                        'Grupo' => $r->groupname ?? '-',
+                        'Horas' => self::format_hours((float)$r->typebhours),
+                        'Asistencia' => 'Confirmada',
+                        'Tarea' => 'No aplica',
+                        'Calificación' => 'No aplica',
+                        'Texto alumno' => !empty($r->typebreflection) ? (string)$r->typebreflection : 'Pendiente',
+                    ]);
+                }
+            }
+        } else {
+            $pdf->writeHTML('<p>No constan horas de reconocimiento institucional.</p>', true, false, true, false, '');
         }
 
         $pdf->writeHTML('<p style="color:#666;font-size:9pt;">Documento generado automáticamente por Gestion_actividades.</p>', true, false, true, false, '');

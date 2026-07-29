@@ -9,7 +9,7 @@ require_capability('local/gestion_actividades:view', $context);
 
 $id = required_param('id', PARAM_INT);
 $activity = manager::get_activity($id);
-$canmanage = has_capability('local/gestion_actividades:manage', $context);
+$canmanage = \local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id);
 
 $PAGE->set_context($context);
 $PAGE->set_url(new moodle_url('/local/gestion_actividades/view.php', ['id' => $id]));

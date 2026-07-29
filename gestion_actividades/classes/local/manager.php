@@ -316,15 +316,18 @@ class manager {
     public static function get_workshop_overview_rows(): array {
         global $DB;
 
-        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshop_editions'))) {
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshops'))
+            || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshop_editions'))) {
             return [];
         }
 
         $sql = "SELECT e.id,
+                       w.id AS workshopid,
                        w.courseid,
                        w.code AS workshopcode,
                        w.name AS workshopname,
                        w.hours AS workshophours,
+                       w.workshoptype AS workshoptype,
                        e.name AS editionname,
                        e.editioncode,
                        e.sessiondate,
@@ -345,31 +348,64 @@ class manager {
                   JOIN {local_ga_workshop_editions} e ON e.workshopid = w.id
               ORDER BY e.sessiondate DESC, e.id DESC";
         $rows = $DB->get_records_sql($sql);
+        if (!$rows) {
+            return [];
+        }
 
+        $editionids = array_map('intval', array_keys($rows));
+        $groupids = [];
         foreach ($rows as $row) {
+            if (!empty($row->groupid)) {
+                $groupids[(int)$row->groupid] = (int)$row->groupid;
+            }
             $row->enrolledcount = 0;
-            if (!empty($row->groupid) && $DB->record_exists('groups', ['id' => $row->groupid])) {
-                $row->enrolledcount = $DB->count_records('groups_members', ['groupid' => $row->groupid]);
-                $group = $DB->get_record('groups', ['id' => $row->groupid], 'id,name');
-                $row->groupname = $group ? $group->name : '';
-            } else {
-                $row->groupname = '';
-            }
+            $row->groupname = '';
+            $row->teachers = '';
+            $row->teacherids = [];
+        }
 
-            $teachers = self::get_edition_teachers($row->id);
+        if ($groupids) {
+            list($groupsql, $gparams) = $DB->get_in_or_equal(array_values($groupids), SQL_PARAMS_NAMED);
+            $groups = $DB->get_records_select('groups', 'id ' . $groupsql, $gparams, '', 'id,name');
+            $counts = $DB->get_records_sql("SELECT groupid, COUNT(id) AS cnt FROM {groups_members} WHERE groupid $groupsql GROUP BY groupid", $gparams);
+            foreach ($rows as $row) {
+                $gid = (int)$row->groupid;
+                if ($gid > 0) {
+                    $row->groupname = isset($groups[$gid]) ? $groups[$gid]->name : '';
+                    $row->enrolledcount = isset($counts[$gid]) ? (int)$counts[$gid]->cnt : 0;
+                }
+            }
+        }
+
+        if ($editionids && $DB->get_manager()->table_exists(new \xmldb_table('local_ga_edition_teachers'))) {
+            list($insql, $params) = $DB->get_in_or_equal($editionids, SQL_PARAMS_NAMED);
+            $teachers = $DB->get_records_sql("SELECT et.id, et.editionid, et.userid, u.firstname, u.lastname, u.email
+                                                FROM {local_ga_edition_teachers} et
+                                                JOIN {user} u ON u.id = et.userid
+                                               WHERE et.editionid $insql
+                                            ORDER BY u.lastname ASC, u.firstname ASC", $params);
             $names = [];
+            $ids = [];
             foreach ($teachers as $teacher) {
-                $names[] = fullname($teacher);
+                $eid = (int)$teacher->editionid;
+                $names[$eid][] = fullname($teacher);
+                $ids[$eid][] = (int)$teacher->userid;
             }
-            $row->teachers = implode(', ', $names);
+            foreach ($rows as $row) {
+                $eid = (int)$row->id;
+                $row->teachers = !empty($names[$eid]) ? implode(', ', $names[$eid]) : '';
+                $row->teacherids = !empty($ids[$eid]) ? $ids[$eid] : [];
+            }
+        }
 
-            $now = time();
+        $now = time();
+        foreach ($rows as $row) {
             if (!empty($row->archived) || $row->status === 'archived') {
                 $row->computedstatus = 'archived';
             } else if ($row->status === 'closed_full') {
                 $row->computedstatus = 'closed_full';
-            } else if (!empty($row->sessiondate) && $row->sessiondate < $now) {
-                $row->computedstatus = 'past';
+            } else if (!empty($row->status) && in_array((string)$row->status, ['finished', 'completed', 'closed_finished'], true)) {
+                $row->computedstatus = 'archived';
             } else if (!empty($row->enrolenddate) && $row->enrolenddate < $now) {
                 $row->computedstatus = 'closed_date';
             } else {
@@ -419,13 +455,31 @@ class manager {
         return 'TALLERES TIPO A';
     }
 
+    public static function get_main_workshop_section_name_for_type(string $type): string {
+        return self::normalize_workshop_type($type) === 'typeb' ? 'TALLERES TIPO B' : 'TALLERES TIPO A';
+    }
+
     public static function get_archive_workshop_section_name(): string {
         return 'TALLERES TIPO A - ARCHIVO';
+    }
+
+    public static function normalize_workshop_type(string $type): string {
+        $type = strtolower(trim($type));
+        return in_array($type, ['typea', 'typeb'], true) ? $type : 'typea';
+    }
+
+    public static function get_workshop_type(\stdClass $workshop): string {
+        return self::normalize_workshop_type((string)($workshop->workshoptype ?? 'typea'));
+    }
+
+    public static function is_typeb_workshop(\stdClass $workshop): bool {
+        return self::get_workshop_type($workshop) === 'typeb';
     }
 
     public static function ensure_workshop_sections(int $courseid): \stdClass {
         return (object)[
             'main' => self::get_or_create_course_section($courseid, self::get_main_workshop_section_name()),
+            'typeb' => self::get_or_create_course_section($courseid, self::get_main_workshop_section_name_for_type('typeb')),
             'archive' => 0,
         ];
     }
@@ -435,12 +489,12 @@ class manager {
     }
 
     public static function get_or_create_workshop_section(\stdClass $workshop): int {
-        return self::get_or_create_course_section((int)$workshop->courseid, self::get_main_workshop_section_name());
+        return self::get_or_create_course_section((int)$workshop->courseid, self::get_main_workshop_section_name_for_type(self::get_workshop_type($workshop)));
     }
 
 
 
-    public static function create_required_activity_for_edition(int $editionid, ?int $userid = null): \stdClass {
+    public static function create_required_activity_for_edition(int $editionid, ?int $userid = null, string $forcedtype = ''): \stdClass {
         global $DB, $CFG, $USER;
 
         require_once($CFG->dirroot . '/course/lib.php');
@@ -452,16 +506,17 @@ class manager {
         $workshop = self::get_workshop((int)$edition->workshopid);
         $course = $DB->get_record('course', ['id' => (int)$workshop->courseid], '*', MUST_EXIST);
 
-        if (!empty($edition->requiredcmid) && $DB->record_exists('course_modules', ['id' => (int)$edition->requiredcmid])) {
-            $result->success = true;
-            $result->cmid = (int)$edition->requiredcmid;
-            $result->message = get_string('requiredactivityalreadycreated', 'local_gestion_actividades');
+        $type = in_array($forcedtype, ['assign', 'quiz'], true) ? $forcedtype : self::detect_required_activity_type($edition);
+        if ($type === '') {
+            $result->message = get_string('requiredtypenotselected', 'local_gestion_actividades');
             return $result;
         }
 
-        $type = self::detect_required_activity_type($edition);
-        if ($type === '') {
-            $result->message = get_string('requiredtypenotselected', 'local_gestion_actividades');
+        $existing = self::get_required_activity_for_edition_by_type($editionid, $type);
+        if ($existing && !empty($existing->cmid) && $DB->record_exists('course_modules', ['id' => (int)$existing->cmid, 'course' => (int)$workshop->courseid])) {
+            $result->success = true;
+            $result->cmid = (int)$existing->cmid;
+            $result->message = get_string('requiredactivityalreadycreated', 'local_gestion_actividades');
             return $result;
         }
 
@@ -529,6 +584,13 @@ class manager {
 
             if ($cmid > 0) {
                 self::update_edition_required_cmid($editionid, $cmid);
+                try {
+                    self::restrict_required_activity_to_edition_group($editionid, $cmid);
+                    self::hard_archive_cmid_from_course_page((int)$cmid);
+                    self::add_workshop_backlink_to_required_activity($editionid, $cmid);
+                } catch (\Throwable $e) {
+                    // Non-blocking: the activity is still created and linked.
+                }
                 $result->success = true;
                 $result->cmid = $cmid;
                 $result->message = get_string('requiredactivitycreated', 'local_gestion_actividades');
@@ -545,30 +607,9 @@ class manager {
     }
 
     public static function archive_due_workshop_editions(int $courseid = 0): int {
-        global $DB, $CFG;
-        require_once($CFG->dirroot . '/course/lib.php');
-        $now = time();
-        $params = ['now' => $now];
-        $coursesql = '';
-        if ($courseid > 0) {
-            $coursesql = ' AND w.courseid = :courseid';
-            $params['courseid'] = $courseid;
-        }
-        $sql = "SELECT e.*, w.courseid FROM {local_ga_workshop_editions} e JOIN {local_ga_workshops} w ON w.id = e.workshopid WHERE e.archived = 0 AND e.sessiondate > 0 AND e.sessiondate < :now $coursesql";
-        $editions = $DB->get_records_sql($sql, $params);
-        $count = 0;
-        foreach ($editions as $edition) {
-            $DB->set_field('local_ga_workshop_editions', 'archived', 1, ['id' => $edition->id]);
-            $DB->set_field('local_ga_workshop_editions', 'timearchived', $now, ['id' => $edition->id]);
-            $DB->set_field('local_ga_workshop_editions', 'status', 'archived', ['id' => $edition->id]);
-            foreach (['requiredcmid', 'attendancecmid', 'certificatecmid'] as $field) {
-                if (!empty($edition->$field) && $DB->record_exists('course_modules', ['id' => $edition->$field])) {
-                    set_coursemodule_visible((int)$edition->$field, 0);
-                }
-            }
-            $count++;
-        }
-        return $count;
+        // Las fechas del taller y de cierre de inscripción no finalizan ni archivan una edición.
+        // Una edición solo deja de estar activa cuando el profesor la finaliza o archiva expresamente.
+        return 0;
     }
 
     public static function get_user_grade_for_cmid(int $userid, int $cmid): ?float {
@@ -600,8 +641,57 @@ class manager {
 
 
     public static function ensure_workshop_course_visuals_safely(int $workshopid): bool {
-        $result = self::ensure_workshop_course_visual_with_message($workshopid);
-        return !empty($result->success);
+        try {
+            $workshop = self::get_workshop($workshopid);
+            return self::ensure_workshop_url_in_main_section($workshop);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+
+    public static function is_workshop_currently_offered(\stdClass $workshop): bool {
+        global $DB;
+
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshop_editions'))) {
+            return true;
+        }
+
+        // Un taller recién creado sin edición todavía debe aparecer en el panel para poder configurarlo.
+        if (!$DB->record_exists('local_ga_workshop_editions', ['workshopid' => (int)$workshop->id])) {
+            return true;
+        }
+
+        return self::is_workshop_publishable($workshop);
+    }
+
+    public static function is_workshop_publishable(\stdClass $workshop): bool {
+        global $DB;
+
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshop_editions'))) {
+            return false;
+        }
+
+        // La fecha del taller solo informa de cuándo se realiza. No retira la edición del curso.
+        // La edición permanece publicada hasta que un profesor la finaliza o archiva expresamente.
+        $sql = "SELECT id
+                  FROM {local_ga_workshop_editions}
+                 WHERE workshopid = :workshopid
+                   AND (archived = 0 OR archived IS NULL)
+                   AND (status IS NULL OR status NOT IN ('archived', 'finished', 'closed_full', 'completed', 'closed_finished'))
+              ORDER BY sessiondate ASC, id ASC";
+        return $DB->record_exists_sql($sql, ['workshopid' => (int)$workshop->id]);
+    }
+
+    public static function list_current_workshops(int $courseid = 0, string $type = ''): array {
+        $workshops = self::list_workshops($courseid, $type);
+        $out = [];
+        foreach ($workshops as $workshop) {
+            if (self::is_workshop_currently_offered($workshop)) {
+                $out[$workshop->id] = $workshop;
+            }
+        }
+        return $out;
     }
 
     public static function ensure_all_workshop_course_visuals(int $courseid = 0): \stdClass {
@@ -622,14 +712,63 @@ class manager {
             'messages' => [],
         ];
 
+        $courseids = [];
         foreach ($workshops as $workshop) {
-            $result = self::ensure_workshop_course_visual_with_message((int)$workshop->id);
-            if (!empty($result->success)) {
-                $summary->created++;
-            } else {
-                $summary->failed++;
+            $courseids[(int)$workshop->courseid] = true;
+        }
+
+        foreach (array_keys($courseids) as $cid) {
+            try {
+                $removed = self::cleanup_generated_course_entries_for_course((int)$cid);
+                if ($removed > 0) {
+                    $summary->messages[] = 'Limpieza previa en curso ID ' . (int)$cid . ': ' . (int)$removed . ' entrada(s) retirada(s).';
+                }
+                self::delete_student_portfolio_url_from_course((int)$cid);
+            } catch (\Throwable $e) {
+                $summary->messages[] = 'No se pudo limpiar el curso ID ' . (int)$cid . ': ' . $e->getMessage();
             }
-            $summary->messages[] = $result->message;
+        }
+
+        foreach ($workshops as $workshop) {
+            if (!self::is_workshop_publishable($workshop)) {
+                try {
+                    $removed = self::delete_workshop_course_entries($workshop);
+                    if ($removed > 0) {
+                        $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': retirado de la sección del curso porque no tiene edición vigente/publicable o está finalizado/archivado.';
+                    } else {
+                        $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': omitido porque no tiene edición vigente/publicable o está finalizado/archivado.';
+                    }
+                } catch (\Throwable $e) {
+                    $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': omitido, pero no se pudo retirar de la sección: ' . $e->getMessage();
+                }
+                continue;
+            }
+
+            try {
+                if (self::ensure_workshop_url_in_main_section($workshop)) {
+                    $summary->created++;
+                    $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': publicado/actualizado en el curso.';
+                } else {
+                    $summary->failed++;
+                    $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': no se pudo publicar como URL visible.';
+                }
+            } catch (\Throwable $e) {
+                $summary->failed++;
+                $summary->messages[] = trim($workshop->code . ' - ' . $workshop->name) . ': ' . $e->getMessage();
+            }
+        }
+
+        foreach (array_keys($courseids) as $cid) {
+            try {
+                self::sync_workshop_section_summary((int)$cid, 'typea');
+                self::sync_workshop_section_summary((int)$cid, 'typeb');
+                if (class_exists('local_gestion_actividades\local\grade_manager')) {
+                    grade_manager::ensure_selfassessment_availability((int)$cid);
+                }
+            } catch (\Throwable $e) {
+                $summary->failed++;
+                $summary->messages[] = 'No se pudo reconstruir la sección visible del curso ID ' . (int)$cid . ': ' . $e->getMessage();
+            }
         }
 
         return $summary;
@@ -644,7 +783,7 @@ class manager {
             return false;
         }
 
-        $mainsection = self::get_or_create_course_section((int)$workshop->courseid, self::get_main_workshop_section_name());
+        $mainsection = self::get_or_create_course_section((int)$workshop->courseid, self::get_main_workshop_section_name_for_type(self::get_workshop_type($workshop)));
         $labelname = self::get_workshop_course_entry_name($workshop);
 
         // Avoid duplicates.
@@ -690,65 +829,213 @@ class manager {
     }
 
     public static function get_workshop_course_entry_name(\stdClass $workshop): string {
-        return '[Taller Tipo A] ' . trim($workshop->code . ' - ' . $workshop->name);
+        return trim($workshop->code . ' - ' . $workshop->name);
     }
 
 
 
 
-    public static function ensure_workshop_url_in_main_section(\stdClass $workshop): bool {
+    /**
+     * Ensure a course module is visible and present in the target section sequence.
+     * Archived workshop entries may remain as valid modules but be absent from every sequence.
+     */
+    private static function restore_cmid_to_course_section(int $courseid, int $cmid, int $sectionnum): bool {
         global $DB, $CFG;
-        require_once($CFG->dirroot . '/course/lib.php');
-        require_once($CFG->dirroot . '/course/modlib.php');
 
-        if (!$DB->record_exists('modules', ['name' => 'url']) || !$DB->get_manager()->table_exists(new \xmldb_table('url'))) {
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        $cmrecord = $DB->get_record('course_modules', ['id' => $cmid, 'course' => $courseid], '*', IGNORE_MISSING);
+        $targetrecord = $DB->get_record('course_sections', [
+            'course' => $courseid,
+            'section' => $sectionnum,
+        ], '*', IGNORE_MISSING);
+        if (!$cmrecord || !$targetrecord) {
             return false;
         }
 
-        $mainsection = self::get_or_create_course_section((int)$workshop->courseid, self::get_main_workshop_section_name());
-        $entryname = self::get_workshop_course_entry_name($workshop);
+        try {
+            // Use Moodle's course API so course_modules.section, the section sequence,
+            // format-specific data and all related caches are updated as one operation.
+            rebuild_course_cache($courseid, true);
+            $modinfo = get_fast_modinfo($courseid);
+            $cm = $modinfo->get_cm($cmid);
+            $targetsection = $modinfo->get_section_info($sectionnum, MUST_EXIST);
 
-        $sql = "SELECT cm.id
-                  FROM {course_modules} cm
-                  JOIN {modules} m ON m.id = cm.module
-                  JOIN {url} u ON u.id = cm.instance
-                 WHERE cm.course = :courseid
-                   AND m.name = 'url'
-                   AND u.name = :name";
-        if ($DB->record_exists_sql($sql, ['courseid' => (int)$workshop->courseid, 'name' => $entryname])) {
-            return true;
+            $currentsectionnum = isset($cm->sectionnum) ? (int)$cm->sectionnum : -1;
+            $targetsequence = trim((string)($targetrecord->sequence ?? '')) === ''
+                ? []
+                : array_values(array_filter(array_map('intval', explode(',', (string)$targetrecord->sequence))));
+            $insequence = in_array($cmid, $targetsequence, true);
+
+            if ($currentsectionnum !== $sectionnum || !$insequence) {
+                moveto_module($cm, $targetsection);
+            }
+
+            set_coursemodule_visible($cmid, 1, 1, false);
+            rebuild_course_cache($courseid, true);
+
+            // Verify the persisted state instead of trusting the API call blindly.
+            $verifiedcm = $DB->get_record('course_modules', ['id' => $cmid, 'course' => $courseid], 'id,section,visible,visibleoncoursepage', MUST_EXIST);
+            $verifiedsection = $DB->get_record('course_sections', ['id' => (int)$targetrecord->id], 'id,sequence', MUST_EXIST);
+            $verifiedsequence = trim((string)($verifiedsection->sequence ?? '')) === ''
+                ? []
+                : array_values(array_filter(array_map('intval', explode(',', (string)$verifiedsection->sequence))));
+
+            return (int)$verifiedcm->section === (int)$targetrecord->id
+                && !empty($verifiedcm->visible)
+                && (!property_exists($verifiedcm, 'visibleoncoursepage') || !empty($verifiedcm->visibleoncoursepage))
+                && in_array($cmid, $verifiedsequence, true);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+
+    /**
+     * Rebuild the visible workshop cards directly in the course section summary.
+     * This avoids relying on label modules and section sequences, which can vary
+     * between Moodle course formats. Only currently publishable workshops are shown.
+     */
+
+    /**
+     * Whether enrolment is closed for an edition.
+     * Uses the explicit enrolment deadline when configured and otherwise
+     * closes at the end of the workshop day.
+     */
+    public static function is_edition_enrolment_closed(\stdClass $edition, ?int $now = null): bool {
+        $now = $now ?? time();
+        if (!empty($edition->enrolenddate)) {
+            return $now > (int)$edition->enrolenddate;
+        }
+        if (!empty($edition->sessiondate)) {
+            $daystart = usergetmidnight((int)$edition->sessiondate);
+            return $now > ($daystart + DAYSECS - 1);
+        }
+        return false;
+    }
+
+    public static function sync_workshop_section_summary(int $courseid, string $type = 'typea'): bool {
+        global $DB, $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        $sectionname = self::get_main_workshop_section_name_for_type($type);
+        $sectionnum = self::get_or_create_course_section($courseid, $sectionname);
+        $section = $DB->get_record('course_sections', [
+            'course' => $courseid,
+            'section' => $sectionnum,
+        ], '*', MUST_EXIST);
+
+        $workshops = self::list_workshops($courseid, $type);
+        $cards = '';
+        foreach ($workshops as $workshop) {
+            if (!self::is_workshop_publishable($workshop)) {
+                continue;
+            }
+            $edition = self::get_primary_workshop_edition((int)$workshop->id);
+            if (!$edition) {
+                continue;
+            }
+            $viewurl = new \moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => (int)$workshop->id]);
+            $enrolurl = new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => (int)$edition->id]);
+            $date = !empty($edition->sessiondate) ? self::format_workshop_date((int)$edition->sessiondate) : '-';
+            $hours = isset($workshop->hours) && $workshop->hours !== null ? round((float)$workshop->hours, 2) . ' h' : '-';
+            $remaining = self::get_edition_remaining_places($edition);
+            $remainingtext = $remaining === null ? get_string('unlimitedplaces', 'local_gestion_actividades') : (string)$remaining;
+            $title = trim((string)$workshop->code . ' - ' . (string)$workshop->name);
+
+            $cards .= '<div class="local-ga-course-workshop" style="padding:1rem 1.1rem;border:1px solid #d8dee9;border-left:4px solid #0f6cbf;border-radius:10px;background:#fff;margin:.65rem 0;">';
+            $cards .= '<div style="font-weight:700;font-size:1.08rem;">' . s($title) . '</div>';
+            if (!empty($workshop->description)) {
+                $cards .= '<div style="margin-top:.3rem;">' . s(trim((string)$workshop->description)) . '</div>';
+            }
+            $cards .= '<div style="margin-top:.45rem;color:#444;">';
+            $cards .= '<strong>' . get_string('date') . ':</strong> ' . s($date);
+            $cards .= ' · <strong>' . get_string('workshophours', 'local_gestion_actividades') . ':</strong> ' . s($hours);
+            $cards .= ' · <strong>' . get_string('remainingplaces', 'local_gestion_actividades') . ':</strong> ' . s($remainingtext);
+            $cards .= '</div>';
+            $cards .= '<div class="local-ga-card-actions" data-editionid="' . (int)$edition->id . '" style="margin-top:.65rem;">';
+            if (self::is_edition_enrolment_closed($edition)) {
+                $cards .= '<span class="btn disabled local-ga-enrol-status" style="background:#fff0d5;border-color:#efbd68;color:#8a4b00;" aria-disabled="true">' . get_string('enrolmentclosed', 'local_gestion_actividades') . '</span> ';
+            } else {
+                $cards .= '<a class="btn btn-primary local-ga-enrol-status" href="' . $enrolurl->out(false) . '">' . get_string('enrolme', 'local_gestion_actividades') . '</a> ';
+            }
+            $cards .= '<a class="btn btn-secondary" href="' . $viewurl->out(false) . '">' . get_string('viewworkshop', 'local_gestion_actividades') . '</a>';
+            $cards .= '</div></div>';
         }
 
-        $course = $DB->get_record('course', ['id' => (int)$workshop->courseid], '*', MUST_EXIST);
-        $module = $DB->get_record('modules', ['name' => 'url'], '*', MUST_EXIST);
-        $targeturl = new \moodle_url('/local/gestion_actividades/editions.php', ['workshopid' => $workshop->id]);
+        $summary = $cards;
+        if ($summary === '') {
+            $summary = '<div class="alert alert-info mb-0">No hay talleres disponibles en este momento.</div>';
+        }
 
-        $hours = isset($workshop->hours) && $workshop->hours !== null && $workshop->hours !== ''
-            ? ' — ' . round((float)$workshop->hours, 2) . ' h'
-            : '';
-
-        $moduleinfo = new \stdClass();
-        $moduleinfo->course = $course->id;
-        $moduleinfo->module = $module->id;
-        $moduleinfo->modulename = 'url';
-        $moduleinfo->section = $mainsection;
-        $moduleinfo->visible = 1;
-        $moduleinfo->name = $entryname . $hours;
-        $moduleinfo->intro = get_string('workshopcourseentryintro', 'local_gestion_actividades');
-        $moduleinfo->introformat = FORMAT_HTML;
-        $moduleinfo->externalurl = $targeturl->out(false);
-        $moduleinfo->display = 0;
-        $moduleinfo->displayoptions = serialize([]);
-        $moduleinfo->showdescription = 0;
-        $moduleinfo->cmidnumber = '';
-        $moduleinfo->groupmode = 0;
-        $moduleinfo->groupingid = 0;
-        $moduleinfo->completion = 0;
-        $moduleinfo->availability = null;
-
-        add_moduleinfo($moduleinfo, $course);
-        rebuild_course_cache((int)$workshop->courseid, true);
+        if ((string)($section->summary ?? '') !== $summary || (int)($section->summaryformat ?? FORMAT_HTML) !== FORMAT_HTML || empty($section->visible)) {
+            course_update_section($courseid, $section, [
+                'summary' => $summary,
+                'summaryformat' => FORMAT_HTML,
+                'visible' => 1,
+            ]);
+        } else {
+            rebuild_course_cache($courseid, true);
+        }
         return true;
+    }
+
+    public static function ensure_workshop_url_in_main_section(\stdClass $workshop): bool {
+        return self::sync_workshop_section_summary(
+            (int)$workshop->courseid,
+            self::get_workshop_type($workshop)
+        );
+    }
+
+    public static function ensure_student_portfolio_url_in_course(int $courseid): bool {
+        // Desde v1.5.14 el acceso de alumno no se publica como actividad en la sección del curso.
+        // Debe mostrarse mediante el bloque lateral block_gestion_hee, visible solo para alumnos.
+        self::delete_student_portfolio_url_from_course($courseid);
+        return false;
+    }
+
+    public static function delete_student_portfolio_url_from_course(int $courseid): int {
+        global $DB, $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        if (!$DB->record_exists('modules', ['name' => 'url']) || !$DB->get_manager()->table_exists(new \xmldb_table('url'))) {
+            return 0;
+        }
+
+        $names = [
+            get_string('studentportfolioentryname', 'local_gestion_actividades'),
+            'Mi portafolio HEE',
+            'Mis certificados',
+            'Mis horas',
+        ];
+        $deleted = 0;
+
+        foreach ($names as $name) {
+            $sql = "SELECT cm.id AS cmid
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                      JOIN {url} u ON u.id = cm.instance
+                     WHERE cm.course = :courseid
+                       AND m.name = 'url'
+                       AND " . $DB->sql_like('u.name', ':name', false);
+            $records = $DB->get_records_sql($sql, [
+                'courseid' => $courseid,
+                'name' => $DB->sql_like_escape($name) . '%',
+            ]);
+            foreach ($records as $record) {
+                try {
+                    course_delete_module((int)$record->cmid);
+                    $deleted++;
+                } catch (\Throwable $e) {
+                    // Continue with the rest.
+                }
+            }
+        }
+
+        if ($deleted > 0) {
+            rebuild_course_cache($courseid, true);
+        }
+        return $deleted;
     }
 
     public static function filter_object_to_columns(string $tablename, \stdClass $object): \stdClass {
@@ -770,15 +1057,14 @@ class manager {
             return null;
         }
 
-        $now = time();
         $sql = "SELECT *
                   FROM {local_ga_workshop_editions}
                  WHERE workshopid = :workshopid
                    AND (archived = 0 OR archived IS NULL)
-              ORDER BY CASE WHEN sessiondate >= :now THEN 0 ELSE 1 END,
-                       sessiondate ASC,
-                       id ASC";
-        $records = $DB->get_records_sql($sql, ['workshopid' => $workshopid, 'now' => $now], 0, 1);
+                   AND (status IS NULL OR status NOT IN ('archived', 'finished', 'completed', 'closed_finished'))
+              ORDER BY sessiondate DESC,
+                       id DESC";
+        $records = $DB->get_records_sql($sql, ['workshopid' => $workshopid], 0, 1);
         if (!$records) {
             return null;
         }
@@ -810,7 +1096,11 @@ class manager {
         if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_edition_enrolments'))) {
             return 0;
         }
-        return (int)$DB->count_records('local_ga_edition_enrolments', ['editionid' => $editionid, 'status' => 'enrolled']);
+        $sql = "SELECT COUNT(1)
+                  FROM {local_ga_edition_enrolments}
+                 WHERE editionid = :editionid
+                   AND status IN ('enrolled', 'attended')";
+        return (int)$DB->count_records_sql($sql, ['editionid' => $editionid]);
     }
 
     public static function enrol_user_in_edition(int $editionid, int $userid, string $source = 'self'): \stdClass {
@@ -828,7 +1118,7 @@ class manager {
             return $result;
         }
 
-        if (!empty($edition->enrolenddate) && $now > (int)$edition->enrolenddate) {
+        if ($source !== 'manual' && !empty($edition->enrolenddate) && $now > (int)$edition->enrolenddate) {
             $result->message = get_string('enrolclosed', 'local_gestion_actividades');
             return $result;
         }
@@ -841,17 +1131,25 @@ class manager {
         }
 
         $places = (int)($edition->places ?? 0);
-        if ($places > 0 && self::get_edition_enrolment_count($editionid) >= $places) {
+        $enrolmentcount = self::get_edition_enrolment_count($editionid);
+
+        // La incorporación manual puede superar fecha y aforo; después de guardar
+        // se amplía el número de plazas para conservar las plazas ordinarias libres.
+        if ($source !== 'manual' && $places > 0 && $enrolmentcount >= $places) {
             $result->message = get_string('editionfull', 'local_gestion_actividades');
             return $result;
         }
 
-        if (!empty($edition->groupid) && $DB->record_exists('groups', ['id' => $edition->groupid])) {
-            try {
-                groups_add_member((int)$edition->groupid, $userid);
-            } catch (\Throwable $e) {
-                // Do not block internal enrolment if group add fails.
+        try {
+            if (empty($edition->groupid) || !$DB->record_exists('groups', ['id' => (int)$edition->groupid])) {
+                $newgroupid = self::get_or_create_edition_group((int)$editionid);
+                $edition->groupid = $newgroupid;
             }
+            if (!empty($edition->groupid) && $DB->record_exists('groups', ['id' => (int)$edition->groupid])) {
+                groups_add_member((int)$edition->groupid, $userid);
+            }
+        } catch (\Throwable $e) {
+            // Do not block internal enrolment if group creation/add fails.
         }
 
         $record = (object)[
@@ -870,6 +1168,13 @@ class manager {
             $DB->update_record('local_ga_edition_enrolments', $record);
         } else {
             $DB->insert_record('local_ga_edition_enrolments', $record);
+        }
+
+        if ($source === 'manual' && $places > 0) {
+            // Incremento atómico para evitar perder plazas si dos profesores añaden alumnado a la vez.
+            $DB->execute("UPDATE {local_ga_workshop_editions}
+                            SET places = places + 1
+                          WHERE id = :editionid AND places > 0", ['editionid' => $editionid]);
         }
 
         $result->success = true;
@@ -938,7 +1243,7 @@ class manager {
             $entryname = trim($workshop->code . ' - ' . $workshop->name);
 
             $viewurl = new \moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => $workshop->id]);
-            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id, 'sesskey' => sesskey()]) : $viewurl;
+            $enrolurl = $edition ? new \moodle_url('/local/gestion_actividades/enrol.php', ['id' => $edition->id]) : $viewurl;
             $date = $edition ? self::format_workshop_date((int)$edition->sessiondate) : '-';
             $description = trim((string)($workshop->description ?? ''));
 
@@ -979,6 +1284,7 @@ class manager {
             ]);
 
             if ($existing) {
+                $restored = false;
                 foreach ($existing as $ex) {
                     $label = $DB->get_record('label', ['id' => $ex->labelid], '*', MUST_EXIST);
                     $label->name = $entryname;
@@ -987,10 +1293,16 @@ class manager {
                     $label->timemodified = time();
                     $label = self::filter_object_to_columns('label', $label);
                     $DB->update_record('label', $label);
+                    $restored = self::restore_cmid_to_course_section(
+                        $courseid,
+                        (int)$ex->cmid,
+                        $sectionnum
+                    ) || $restored;
                 }
-                rebuild_course_cache($courseid, true);
-                $result->success = true;
-                $result->message = $entryname . ': actualizado para alumnos.';
+                $result->success = $restored;
+                $result->message = $restored
+                    ? $entryname . ': actualizado y verificado para alumnos.'
+                    : $entryname . ': la etiqueta existe, pero Moodle no pudo insertarla en la sección del curso.';
                 return $result;
             }
 
@@ -1205,15 +1517,15 @@ class manager {
     }
 
     public static function user_completed_required_activity(int $userid, int $cmid): bool {
-        global $DB;
         if ($cmid <= 0) {
             return true;
         }
+        global $DB;
         $completion = $DB->get_record('course_modules_completion', ['coursemoduleid' => $cmid, 'userid' => $userid]);
-        if (!$completion) {
-            return false;
+        if ($completion && (int)$completion->completionstate > 0) {
+            return true;
         }
-        return ((int)$completion->completionstate > 0);
+        return self::get_user_grade_for_cmid($userid, $cmid) !== null;
     }
 
     public static function get_edition_students_status(int $editionid): array {
@@ -1235,8 +1547,10 @@ class manager {
             ]) ? 1 : 0;
             $row->requiredcompleted = self::user_completed_required_activity((int)$row->userid, (int)$edition->requiredcmid) ? 1 : 0;
             $row->activitygrade = self::get_user_grade_for_cmid((int)$row->userid, (int)$edition->requiredcmid);
-            if (($edition->requiredmodname ?? '') === 'quiz' && ($edition->quizgradingmode ?? 'completion') === 'points') {
-                $row->requiredcompleted = ($row->activitygrade !== null) ? 1 : 0;
+            $minimumgrade = self::parse_decimal_input($edition->tasknumericgrade ?? null);
+            $checkpoints = (($edition->quizgradingmode ?? 'completion') === 'points') || ($minimumgrade !== null && $minimumgrade > 0);
+            if (!empty($edition->requiredcmid) && $checkpoints) {
+                $row->requiredcompleted = ($row->activitygrade !== null && $row->activitygrade >= (float)$minimumgrade) ? 1 : 0;
             }
             $row->certificateeligible = ($row->attended && $row->requiredcompleted) ? 1 : 0;
             $row->certificatependingstore = $row->certificateeligible;
@@ -1249,7 +1563,7 @@ class manager {
 
     public static function format_action_icon(string $url, string $pix, string $label, string $btnclass = 'btn btn-secondary btn-sm'): string {
         global $OUTPUT;
-        return html_writer::link(
+        return \html_writer::link(
             $url,
             $OUTPUT->pix_icon($pix, $label),
             ['class' => $btnclass, 'title' => $label, 'aria-label' => $label]
@@ -1276,33 +1590,155 @@ class manager {
 
     public static function get_student_total_hours(int $userid): float {
         global $DB;
-        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_hour_history'))) {
+        $userid = max(0, $userid);
+        if ($userid <= 0) {
             return 0.0;
         }
-        $total = $DB->get_field_sql(
-            "SELECT COALESCE(SUM(hours), 0) FROM {local_ga_hour_history} WHERE userid = :userid",
-            ['userid' => $userid]
-        );
+        $total = 0.0;
+        if ($DB->get_manager()->table_exists(new \xmldb_table('local_ga_hour_history'))) {
+            $total += (float)$DB->get_field_sql(
+                "SELECT COALESCE(SUM(hours), 0) FROM {local_ga_hour_history} WHERE userid = :userid",
+                ['userid' => $userid]
+            );
+        }
+        if (class_exists('local_gestion_actividades\\local\\institutional_hours')) {
+            $total += (float)institutional_hours::total_typea_hours($userid);
+        }
         return (float)$total;
     }
 
     public static function get_hours_summary_by_student(): array {
         global $DB;
-        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_hour_history'))) {
+
+        $summary = [];
+
+        $ensure = function(int $userid) use (&$summary): \stdClass {
+            if (!isset($summary[$userid])) {
+                $summary[$userid] = (object)[
+                    'id' => $userid,
+                    'firstname' => '',
+                    'lastname' => '',
+                    'email' => '',
+                    'completedworkshops' => 0,
+                    'validatedtypebcount' => 0,
+                    'totaltypeahours' => 0.0,
+                    'totaltypebhours' => 0.0,
+                    'totalhours' => 0.0,
+                ];
+            }
+            return $summary[$userid];
+        };
+
+        $hascoursehistory = $DB->get_manager()->table_exists(new \xmldb_table('local_ga_hour_history'));
+        if ($hascoursehistory) {
+            $history = $DB->get_records_sql("SELECT h.userid, COUNT(h.id) AS completedworkshops, COALESCE(SUM(h.hours), 0) AS totalhours
+                                               FROM {local_ga_hour_history} h
+                                               JOIN {local_ga_workshops} w ON w.id = h.workshopid
+                                              WHERE (w.workshoptype = 'typea' OR w.workshoptype IS NULL OR w.workshoptype = '')
+                                           GROUP BY h.userid");
+            foreach ($history as $row) {
+                $item = $ensure((int)$row->userid);
+                $item->completedworkshops += (int)$row->completedworkshops;
+                $item->totaltypeahours += (float)$row->totalhours;
+            }
+        }
+
+        if ($DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))
+            && $DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshops'))) {
+            $notexists = '';
+            if ($hascoursehistory) {
+                $notexists = " AND NOT EXISTS (SELECT 1 FROM {local_ga_hour_history} h WHERE h.userid = cert.userid AND h.editionid = cert.editionid)";
+            }
+            $certcolumns = $DB->get_columns('local_ga_certificates');
+            $typeafilter = isset($certcolumns['certificatetype']) ? " AND (cert.certificatetype = 'typea' OR cert.certificatetype IS NULL OR cert.certificatetype = '')" : '';
+            $certsql = "SELECT cert.userid, COUNT(cert.id) AS completedworkshops, COALESCE(SUM(w.hours), 0) AS totalhours
+                          FROM {local_ga_certificates} cert
+                     LEFT JOIN {local_ga_workshops} w ON w.id = cert.workshopid
+                         WHERE cert.userid > 0 $notexists $typeafilter
+                      GROUP BY cert.userid";
+            $certs = $DB->get_records_sql($certsql);
+            foreach ($certs as $row) {
+                $item = $ensure((int)$row->userid);
+                $item->completedworkshops += (int)$row->completedworkshops;
+                $item->totaltypeahours += (float)$row->totalhours;
+            }
+            if (isset($certcolumns['certificatetype'])) {
+                $typebs = $DB->get_records_sql("SELECT cert.userid, COUNT(cert.id) AS validatedtypebcount, COALESCE(SUM(w.hours), 0) AS totalhours
+                                                   FROM {local_ga_certificates} cert
+                                              LEFT JOIN {local_ga_workshops} w ON w.id = cert.workshopid
+                                                  WHERE cert.userid > 0 AND cert.certificatetype = 'typeb'
+                                               GROUP BY cert.userid");
+                foreach ($typebs as $row) {
+                    $item = $ensure((int)$row->userid);
+                    $item->validatedtypebcount += (int)$row->validatedtypebcount;
+                    $item->totaltypebhours += (float)$row->totalhours;
+                }
+            }
+        }
+
+        if ($DB->get_manager()->table_exists(new \xmldb_table('local_ga_typeb_certs'))) {
+            $typeb = $DB->get_records_sql("SELECT userid, COUNT(id) AS validatedtypebcount, COALESCE(SUM(hours), 0) AS totalhours
+                                             FROM {local_ga_typeb_certs}
+                                            WHERE status = :status
+                                         GROUP BY userid", ['status' => 'validated']);
+            foreach ($typeb as $row) {
+                $item = $ensure((int)$row->userid);
+                $item->validatedtypebcount += (int)$row->validatedtypebcount;
+                $item->totaltypebhours += (float)$row->totalhours;
+            }
+        }
+
+        if (class_exists('local_gestion_actividades\\local\\institutional_hours')) {
+            try {
+                institutional_hours::ensure_table();
+                $institutional = $DB->get_records_sql("SELECT userid, COALESCE(SUM(typeahours), 0) AS typeahours, COALESCE(SUM(typebhours), 0) AS typebhours
+                                                          FROM {local_ga_institutional_hours}
+                                                         WHERE userid > 0
+                                                      GROUP BY userid");
+                foreach ($institutional as $row) {
+                    $item = $ensure((int)$row->userid);
+                    $item->totaltypeahours += (float)$row->typeahours;
+                    $item->totaltypebhours += (float)$row->typebhours;
+                }
+            } catch (\Throwable $e) {
+                if (function_exists('debugging')) {
+                    debugging('No se han podido sumar horas de reconocimiento institucional: ' . $e->getMessage(), DEBUG_DEVELOPER);
+                }
+            }
+        }
+
+        if ($DB->get_manager()->table_exists(new \xmldb_table('local_ga_typeb_transfers'))) {
+            $transfers = $DB->get_records_sql("SELECT userid, COUNT(id) AS cnt, COALESCE(SUM(hours), 0) AS hours
+                                                 FROM {local_ga_typeb_transfers}
+                                                WHERE status = :status
+                                             GROUP BY userid", ['status' => 'active']);
+            foreach ($transfers as $row) {
+                $item = $ensure((int)$row->userid);
+                $hours = (float)($row->hours ?? 0);
+                $item->totaltypeahours = max(0.0, (float)$item->totaltypeahours - $hours);
+                $item->totaltypebhours += $hours;
+                $item->validatedtypebcount += (int)($row->cnt ?? 0);
+            }
+        }
+
+        if (!$summary) {
             return [];
         }
 
-        $sql = "SELECT u.id,
-                       u.firstname,
-                       u.lastname,
-                       u.email,
-                       COUNT(h.id) AS completedworkshops,
-                       COALESCE(SUM(h.hours), 0) AS totalhours
-                  FROM {local_ga_hour_history} h
-                  JOIN {user} u ON u.id = h.userid
-              GROUP BY u.id, u.firstname, u.lastname, u.email
-              ORDER BY u.lastname ASC, u.firstname ASC";
-        return $DB->get_records_sql($sql);
+        list($usersql, $params) = $DB->get_in_or_equal(array_keys($summary), SQL_PARAMS_NAMED);
+        $users = $DB->get_records_select('user', 'id ' . $usersql . ' AND deleted = 0', $params, 'lastname ASC, firstname ASC', 'id, firstname, lastname, email');
+        $out = [];
+        foreach ($users as $user) {
+            $item = $summary[(int)$user->id];
+            $item->firstname = $user->firstname;
+            $item->lastname = $user->lastname;
+            $item->email = $user->email;
+            $item->totalhours = (float)$item->totaltypeahours + (float)$item->totaltypebhours;
+            if ($item->totalhours > 0 || $item->completedworkshops > 0 || $item->validatedtypebcount > 0) {
+                $out[(int)$user->id] = $item;
+            }
+        }
+        return $out;
     }
 
     public static function store_completed_hour_record(int $editionid, int $userid): bool {
@@ -1336,6 +1772,7 @@ class manager {
         ];
 
         $DB->insert_record('local_ga_hour_history', $record);
+        self::invalidate_block_cache_for_user($userid);
         return true;
     }
 
@@ -1348,6 +1785,11 @@ class manager {
                     $created++;
                 }
             }
+        }
+        if ($created > 0) {
+            $edition = self::get_workshop_edition($editionid);
+            $workshop = self::get_workshop((int)$edition->workshopid);
+            grade_manager::sync_course_safely((int)$workshop->courseid);
         }
         return $created;
     }
@@ -1404,12 +1846,12 @@ class manager {
         return $summary;
     }
 
-    public static function delete_workshop_course_entries(\stdClass $workshop): int {
+
+    public static function cleanup_generated_course_entries_for_course(int $courseid): int {
         global $DB, $CFG;
         require_once($CFG->dirroot . '/course/lib.php');
 
         $count = 0;
-        $entryname = self::get_workshop_course_entry_name($workshop);
         $targets = [
             ['mod' => 'label', 'table' => 'label', 'alias' => 'l'],
             ['mod' => 'url', 'table' => 'url', 'alias' => 'u'],
@@ -1428,21 +1870,103 @@ class manager {
                       JOIN {" . $target['table'] . "} $alias ON $alias.id = cm.instance
                      WHERE cm.course = :courseid
                        AND m.name = :modname
-                       AND $alias.name LIKE :name";
-            $cms = $DB->get_records_sql($sql, [
-                'courseid' => (int)$workshop->courseid,
+                       AND (" . $DB->sql_like("$alias.name", ':typea', false) . "
+                            OR " . $DB->sql_like("$alias.name", ':legacy', false) . ")";
+            $records = $DB->get_records_sql($sql, [
+                'courseid' => $courseid,
                 'modname' => $target['mod'],
-                'name' => $DB->sql_like_escape($entryname) . '%',
+                'typea' => '[Taller Tipo A]%',
+                'legacy' => 'Taller Tipo A%',
             ]);
 
-            foreach ($cms as $cm) {
+            foreach ($records as $record) {
                 try {
-                    course_delete_module((int)$cm->id);
+                    course_delete_module((int)$record->id);
                     $count++;
                 } catch (\Throwable $e) {
-                    // Continue.
+                    // Continue with the rest.
                 }
             }
+        }
+
+        if ($count > 0) {
+            rebuild_course_cache($courseid, true);
+        }
+        return $count;
+    }
+
+    public static function delete_workshop_course_entries(\stdClass $workshop): int {
+        global $DB, $CFG;
+        require_once($CFG->dirroot . '/course/lib.php');
+
+        $count = 0;
+        $entryname = self::get_workshop_course_entry_name($workshop);
+        $courseid = (int)$workshop->courseid;
+        $workshopid = (int)$workshop->id;
+
+        $targets = [
+            ['mod' => 'label', 'table' => 'label', 'alias' => 'l', 'fields' => ['name', 'intro']],
+            ['mod' => 'url', 'table' => 'url', 'alias' => 'u', 'fields' => ['name', 'intro', 'externalurl']],
+            ['mod' => 'page', 'table' => 'page', 'alias' => 'p', 'fields' => ['name', 'content']],
+        ];
+
+        $patterns = [
+            $DB->sql_like_escape($entryname) . '%',
+            '%' . $DB->sql_like_escape('workshop_view.php?id=' . $workshopid) . '%',
+            '%' . $DB->sql_like_escape('id=' . $workshopid) . '%',
+            '%' . $DB->sql_like_escape((string)$workshop->code) . '%',
+            '%' . $DB->sql_like_escape((string)$workshop->name) . '%',
+        ];
+
+        $deleted = [];
+
+        foreach ($targets as $target) {
+            if (!$DB->record_exists('modules', ['name' => $target['mod']]) || !$DB->get_manager()->table_exists(new \xmldb_table($target['table']))) {
+                continue;
+            }
+
+            $alias = $target['alias'];
+            $conditions = [];
+            foreach ($target['fields'] as $field) {
+                $conditions[] = $DB->sql_like($alias . '.' . $field, ':' . $field, false);
+            }
+
+            $sql = "SELECT cm.id
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                      JOIN {" . $target['table'] . "} $alias ON $alias.id = cm.instance
+                     WHERE cm.course = :courseid
+                       AND m.name = :modname
+                       AND (" . implode(' OR ', $conditions) . ")";
+
+            foreach ($patterns as $pattern) {
+                $params = [
+                    'courseid' => $courseid,
+                    'modname' => $target['mod'],
+                ];
+                foreach ($target['fields'] as $field) {
+                    $params[$field] = $pattern;
+                }
+
+                $cms = $DB->get_records_sql($sql, $params);
+                foreach ($cms as $cm) {
+                    $cmid = (int)$cm->id;
+                    if (isset($deleted[$cmid])) {
+                        continue;
+                    }
+                    try {
+                        course_delete_module($cmid);
+                        $deleted[$cmid] = true;
+                        $count++;
+                    } catch (\Throwable $e) {
+                        // Continue.
+                    }
+                }
+            }
+        }
+
+        if ($count > 0) {
+            rebuild_course_cache($courseid, true);
         }
 
         return $count;
@@ -1511,14 +2035,24 @@ class manager {
 
 
 
-    public static function list_workshops(int $courseid = 0): array {
+    public static function list_workshops(int $courseid = 0, string $type = ''): array {
         global $DB;
         $params = [];
-        $where = '';
+        $conds = [];
         if ($courseid > 0) {
-            $where = 'WHERE courseid = :courseid';
+            $conds[] = 'courseid = :courseid';
             $params['courseid'] = $courseid;
         }
+        if ($type !== '' && $DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshops'))) {
+            $columns = $DB->get_columns('local_ga_workshops');
+            if (isset($columns['workshoptype'])) {
+                $conds[] = 'workshoptype = :workshoptype';
+                $params['workshoptype'] = self::normalize_workshop_type($type);
+            } else if (self::normalize_workshop_type($type) === 'typeb') {
+                return [];
+            }
+        }
+        $where = $conds ? ('WHERE ' . implode(' AND ', $conds)) : '';
         return $DB->get_records_sql("SELECT * FROM {local_ga_workshops} $where ORDER BY code ASC, name ASC", $params);
     }
 
@@ -1639,25 +2173,30 @@ class manager {
         ];
 
         $columns = $DB->get_columns('local_ga_workshops');
-        if (isset($columns['hours'])) {
-            $record->hours = self::parse_decimal_input($data->hours ?? null);
+        if (isset($columns['hours']) && isset($data->hours) && trim((string)$data->hours) !== '') {
+            $record->hours = self::parse_decimal_input($data->hours);
         }
         if (isset($columns['sectionnum'])) {
             $record->sectionnum = (int)($data->sectionnum ?? 0);
+        }
+        if (isset($columns['workshoptype'])) {
+            $record->workshoptype = self::normalize_workshop_type((string)($data->workshoptype ?? 'typea'));
         }
 
         if ($id > 0) {
             $record->id = $id;
             $DB->update_record('local_ga_workshops', $record);
             $workshopid = $id;
+            if (property_exists($record, 'hours')) {
+                self::invalidate_block_cache_for_workshop_users($workshopid);
+            }
         } else {
             $record->timecreated = $now;
             $workshopid = $DB->insert_record('local_ga_workshops', $record);
         }
 
-        // Non-blocking: update Moodle course visual structure after saving data.
-        // Visual generation only runs from the explicit button in v0.9.6.
-
+        // No publicar todavía en el curso al crear solo la ficha básica del taller.
+        // La publicación se hace después de guardar la edición/configuración completa.
         return $workshopid;
     }
 
@@ -1687,6 +2226,8 @@ class manager {
         global $DB;
         $now = time();
         $id = !empty($data->id) ? (int)$data->id : 0;
+        $workshop = self::get_workshop((int)$data->workshopid);
+        $mandatoryactivitytype = self::is_typeb_workshop($workshop) ? '' : 'assign';
 
         // Minimal safe edition record. Automatic group/activity/certificate creation is disabled in this version.
         $record = (object)[
@@ -1707,8 +2248,8 @@ class manager {
             'attendancecmid' => (int)($data->attendancecmid ?? 0),
             'certificatecmid' => (int)($data->certificatecmid ?? 0),
             'requiredcmid' => (int)($data->requiredcmid ?? 0),
-            'requiredmodname' => trim($data->requiredmodname ?? ''),
-            'activitycreationtype' => trim($data->activitycreationtype ?? ''),
+            'requiredmodname' => $mandatoryactivitytype,
+            'activitycreationtype' => $mandatoryactivitytype,
             'tasknumericgrade' => self::parse_decimal_input($data->tasknumericgrade ?? null),
             'quizgradingmode' => trim($data->quizgradingmode ?? 'completion'),
             'archived' => (int)($data->archived ?? 0),
@@ -1724,7 +2265,7 @@ class manager {
         if ($id > 0) {
             $old = $DB->get_record('local_ga_workshop_editions', ['id' => $id], '*', MUST_EXIST);
 
-            foreach (['groupid', 'requiredcmid', 'requiredmodname'] as $field) {
+            foreach (['groupid'] as $field) {
                 if (isset($columns[$field]) && empty($record->$field) && isset($old->$field)) {
                     $record->$field = $old->$field;
                 }
@@ -1738,13 +2279,64 @@ class manager {
             $editionid = $DB->insert_record('local_ga_workshop_editions', $record);
         }
 
+        // Campos base del taller editables desde la pantalla completa de edición.
+        if (isset($data->workshophours) || isset($data->workshopname) || isset($data->workshopdescription)) {
+            $wrecord = (object)['id' => (int)$data->workshopid, 'timemodified' => $now];
+            $wcolumns = $DB->get_columns('local_ga_workshops');
+            if (isset($data->workshophours) && trim((string)$data->workshophours) !== '' && isset($wcolumns['hours'])) {
+                $wrecord->hours = self::parse_decimal_input($data->workshophours);
+            }
+            if (isset($data->workshopname) && trim((string)$data->workshopname) !== '') {
+                $wrecord->name = trim((string)$data->workshopname);
+            }
+            if (isset($data->workshopdescription)) {
+                $wrecord->description = clean_param($data->workshopdescription, PARAM_TEXT);
+            }
+            $DB->update_record('local_ga_workshops', self::filter_record_to_existing_fields('local_ga_workshops', $wrecord));
+            if (property_exists($wrecord, 'hours')) {
+                self::invalidate_block_cache_for_workshop_users((int)$data->workshopid);
+            }
+        }
+
+        // Los Tipo B no tienen actividad calificable; solo en ellos se desvincula.
+        if ($mandatoryactivitytype === '') {
+            $clear = (object)[
+                'id' => $editionid,
+                'requiredcmid' => 0,
+                'requiredassigncmid' => 0,
+                'requiredquizcmid' => 0,
+                'requiredmodname' => '',
+                'activitycreationtype' => '',
+                'timemodified' => $now,
+            ];
+            $DB->update_record('local_ga_workshop_editions', self::filter_record_to_existing_fields('local_ga_workshop_editions', $clear));
+        }
+
+        // Crear/asegurar el grupo de la edición de forma interna, sin mostrar avisos al profesor.
+        try {
+            self::get_or_create_edition_group((int)$editionid);
+        } catch (\Throwable $e) {
+            // Non-blocking.
+        }
+
         // Save teachers only if the table exists; do not let it break the edition save.
         if (isset($data->teachers) && is_array($data->teachers)) {
             try {
                 self::save_edition_teachers($editionid, $data->teachers);
             } catch (\Throwable $e) {
-                // Non-blocking in safe mode.
+                // Non-blocking.
             }
+        }
+
+        // Publish or refresh the student-facing card immediately after the complete edition is saved.
+        // This keeps the course view in sync without requiring the manual repair action.
+        try {
+            $freshworkshop = self::get_workshop((int)$data->workshopid);
+            if (self::is_workshop_publishable($freshworkshop)) {
+                self::ensure_workshop_course_visuals_safely((int)$freshworkshop->id);
+            }
+        } catch (\Throwable $e) {
+            // Non-blocking: the edition remains saved and the repair action can still be used.
         }
 
         return $editionid;
@@ -2192,6 +2784,19 @@ class manager {
             $record->timecreated = $now;
             $DB->insert_record('local_ga_grades', $record);
         }
+
+        if ($DB->get_manager()->table_exists(new \xmldb_table('local_ga_grade_log'))) {
+            $DB->insert_record('local_ga_grade_log', (object)[
+                'activityid' => $activity->id,
+                'activitykey' => $activity->activitykey,
+                'userid' => $userid,
+                'academicyear' => $academicyear,
+                'grade' => $grade,
+                'importid' => $importid,
+                'usermodified' => $USER->id,
+                'timecreated' => $now,
+            ]);
+        }
     }
 
     public static function get_grade_history(string $activitykey, int $limit = 500): array {
@@ -2201,6 +2806,20 @@ class manager {
                   JOIN {user} u ON u.id = g.userid
                  WHERE g.activitykey = :activitykey
               ORDER BY g.academicyear DESC, g.grade DESC, u.lastname ASC, u.firstname ASC";
+        return $DB->get_records_sql($sql, ['activitykey' => $activitykey], 0, $limit);
+    }
+
+
+    public static function get_grade_import_log(string $activitykey, int $limit = 2000): array {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_grade_log'))) {
+            return [];
+        }
+        $sql = "SELECT g.*, u.firstname, u.lastname, u.email, u.username
+                  FROM {local_ga_grade_log} g
+                  JOIN {user} u ON u.id = g.userid
+                 WHERE g.activitykey = :activitykey
+              ORDER BY g.timecreated DESC, g.id DESC";
         return $DB->get_records_sql($sql, ['activitykey' => $activitykey], 0, $limit);
     }
 
@@ -2391,31 +3010,92 @@ class manager {
 
     
 
+    public static function list_activities(): array {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_activities'))) {
+            return [];
+        }
+        return $DB->get_records('local_ga_activities', null, 'name ASC, id ASC');
+    }
+
+    public static function can_manage_globally(int $userid): bool {
+        // Strict dashboard access: only site administrators and users explicitly added
+        // in Gestión HEE > Usuarios autorizados. Course teacher roles alone are not enough.
+        return self::is_authorized_manager($userid);
+    }
+
+    public static function is_teacher_assigned_to_workshop(int $workshopid, int $userid): bool {
+        global $DB;
+        if ($workshopid <= 0 || $userid <= 0) {
+            return false;
+        }
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshop_editions'))
+            || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_edition_teachers'))) {
+            return false;
+        }
+        $sql = "SELECT 1
+                  FROM {local_ga_workshop_editions} e
+                  JOIN {local_ga_edition_teachers} et ON et.editionid = e.id
+                 WHERE e.workshopid = :workshopid
+                   AND et.userid = :userid";
+        return $DB->record_exists_sql($sql, ['workshopid' => $workshopid, 'userid' => $userid]);
+    }
+
+    public static function can_manage_workshop_instance(int $workshopid, int $userid): bool {
+        if ($workshopid <= 0 || $userid <= 0) {
+            return false;
+        }
+        if (function_exists('is_role_switched')) {
+            try {
+                $workshop = self::get_workshop($workshopid);
+                if (is_role_switched((int)$workshop->courseid)) {
+                    return false;
+                }
+            } catch (\Throwable $e) {
+                return false;
+            }
+        }
+        // Gestores autorizados y profesores expresamente asignados a alguna edición
+        // de este taller pueden gestionar alumnado, asistencia y calificaciones.
+        return self::can_manage_globally($userid)
+            || self::is_teacher_assigned_to_workshop($workshopid, $userid);
+    }
+
+    public static function is_teacher_assigned_to_edition(int $editionid, int $userid): bool {
+        global $DB;
+        if ($editionid <= 0 || $userid <= 0
+                || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_edition_teachers'))) {
+            return false;
+        }
+        return $DB->record_exists('local_ga_edition_teachers', [
+            'editionid' => $editionid,
+            'userid' => $userid,
+        ]);
+    }
+
+    public static function can_manage_edition(int $editionid, int $userid): bool {
+        if ($editionid <= 0 || $userid <= 0) {
+            return false;
+        }
+        return self::can_manage_globally($userid)
+            || self::is_teacher_assigned_to_edition($editionid, $userid);
+    }
+
+    public static function can_manage_any_workshop_in_course(int $courseid, int $userid): bool {
+        if ($courseid <= 0 || $userid <= 0) {
+            return false;
+        }
+        // Security: course role alone never grants access to the panel from the course menu.
+        return self::can_manage_globally($userid);
+    }
+
     public static function can_manage_workshop(\stdClass $course, int $userid): bool {
         if (function_exists('is_role_switched') && is_role_switched((int)$course->id)) {
             return false;
         }
-
-        $coursecontext = \context_course::instance((int)$course->id);
-        $syscontext = \context_system::instance();
-
-        if (is_siteadmin($userid)) {
-            return true;
-        }
-
-        if (has_capability('moodle/course:update', $coursecontext, $userid)) {
-            return true;
-        }
-
-        if (has_capability('local/gestion_actividades:manage', $syscontext, $userid)) {
-            return true;
-        }
-
-        if (self::is_authorized_manager($userid)) {
-            return true;
-        }
-
-        return false;
+        // Backwards-compatible course-level check: global/authorized managers can manage all.
+        // Workshop-specific professor access must use can_manage_workshop_instance().
+        return self::can_manage_globally($userid);
     }
 
     public static function is_authorized_manager(int $userid): bool {
@@ -2475,20 +3155,121 @@ class manager {
 
     public static function search_course_teachers(int $courseid, string $query): array {
         global $DB;
-        $query = trim($query); if ($query === '') { return []; }
-        $context = \context_course::instance($courseid); $like = '%' . $DB->sql_like_escape($query) . '%';
+        $query = trim($query);
+        $context = \context_course::instance($courseid);
+        if ($query === '') {
+            $sql = "SELECT DISTINCT u.id, u.firstname, u.lastname, u.email
+                      FROM {role_assignments} ra JOIN {role} r ON r.id = ra.roleid JOIN {user} u ON u.id = ra.userid
+                     WHERE ra.contextid = :contextid AND u.deleted = 0 AND u.confirmed = 1
+                       AND (r.shortname IN ('editingteacher','teacher','manager') OR r.archetype IN ('editingteacher','teacher','manager'))
+                  ORDER BY u.lastname ASC, u.firstname ASC";
+            return $DB->get_records_sql($sql, ['contextid'=>$context->id], 0, 200);
+        }
+
+        // The datalist shows values like "Nombre Apellido <email@ucv.es>". Moodle must
+        // search by the email/name parts, not by the whole rendered label, otherwise no
+        // result is returned and the "Añadir" button never appears.
+        $searchterms = [$query];
+        if (preg_match('/<([^>]+)>/', $query, $matches)) {
+            $email = trim($matches[1]);
+            if ($email !== '') {
+                $searchterms[] = $email;
+            }
+            $namepart = trim(preg_replace('/<[^>]+>/', '', $query));
+            if ($namepart !== '') {
+                $searchterms[] = $namepart;
+            }
+        }
+        foreach (preg_split('/\s+/', preg_replace('/<[^>]+>/', ' ', $query), -1, PREG_SPLIT_NO_EMPTY) as $part) {
+            if (\core_text::strlen($part) >= 2) {
+                $searchterms[] = $part;
+            }
+        }
+        $searchterms = array_values(array_unique(array_filter(array_map('trim', $searchterms))));
+
+        $conditions = [];
+        $params = ['contextid' => $context->id];
+        $i = 0;
+        foreach ($searchterms as $term) {
+            $i++;
+            $like = '%' . $DB->sql_like_escape($term) . '%';
+            $params['qf' . $i] = $like;
+            $params['ql' . $i] = $like;
+            $params['qe' . $i] = $like;
+            $conditions[] = '(' .
+                $DB->sql_like('u.firstname', ':qf' . $i, false) . ' OR ' .
+                $DB->sql_like('u.lastname', ':ql' . $i, false) . ' OR ' .
+                $DB->sql_like('u.email', ':qe' . $i, false) .
+                ')';
+        }
+
+        if (!$conditions) {
+            return [];
+        }
+
         $sql = "SELECT DISTINCT u.id, u.firstname, u.lastname, u.email
                   FROM {role_assignments} ra JOIN {role} r ON r.id = ra.roleid JOIN {user} u ON u.id = ra.userid
                  WHERE ra.contextid = :contextid AND u.deleted = 0 AND u.confirmed = 1
                    AND (r.shortname IN ('editingteacher','teacher','manager') OR r.archetype IN ('editingteacher','teacher','manager'))
-                   AND (".$DB->sql_like('u.firstname', ':q1', false)." OR ".$DB->sql_like('u.lastname', ':q2', false)." OR ".$DB->sql_like('u.email', ':q3', false).")
+                   AND (" . implode(' OR ', $conditions) . ")
               ORDER BY u.lastname ASC, u.firstname ASC";
-        return $DB->get_records_sql($sql, ['contextid'=>$context->id,'q1'=>$like,'q2'=>$like,'q3'=>$like], 0, 20);
+        $records = $DB->get_records_sql($sql, $params, 0, 20);
+
+        // Also support roles inherited from category/system and users selected from the
+        // datalist by email. These users may not have a direct role_assignments row in
+        // the course context, but Moodle still grants them teaching/management capability.
+        $userconditions = [];
+        $userparams = [];
+        $i = 0;
+        foreach ($searchterms as $term) {
+            $i++;
+            $like = '%' . $DB->sql_like_escape($term) . '%';
+            $userparams['uf' . $i] = $like;
+            $userparams['ul' . $i] = $like;
+            $userparams['ue' . $i] = $like;
+            $userconditions[] = '(' .
+                $DB->sql_like('firstname', ':uf' . $i, false) . ' OR ' .
+                $DB->sql_like('lastname', ':ul' . $i, false) . ' OR ' .
+                $DB->sql_like('email', ':ue' . $i, false) .
+                ')';
+        }
+        if ($userconditions) {
+            $users = $DB->get_records_select('user',
+                'deleted = 0 AND confirmed = 1 AND (' . implode(' OR ', $userconditions) . ')',
+                $userparams,
+                'lastname ASC, firstname ASC',
+                'id, firstname, lastname, email',
+                0,
+                20
+            );
+            foreach ($users as $user) {
+                if (isset($records[$user->id])) {
+                    continue;
+                }
+                if (has_capability('moodle/course:update', $context, $user->id, false)
+                        || has_capability('moodle/course:manageactivities', $context, $user->id, false)
+                        || has_capability('mod/assign:grade', $context, $user->id, false)
+                        || has_capability('moodle/grade:edit', $context, $user->id, false)) {
+                    $records[$user->id] = $user;
+                }
+            }
+        }
+
+        return array_slice($records, 0, 20, true);
     }
     public static function search_course_students(int $courseid, string $query): array {
         global $DB;
-        $query = trim($query); if ($query === '') { return []; }
-        $context = \context_course::instance($courseid); $like = '%' . $DB->sql_like_escape($query) . '%';
+        $query = trim($query);
+        $context = \context_course::instance($courseid);
+        if ($query === '') {
+            $sql = "SELECT DISTINCT u.id, u.firstname, u.lastname, u.email
+                      FROM {role_assignments} ra JOIN {role} r ON r.id = ra.roleid JOIN {user} u ON u.id = ra.userid
+                     WHERE ra.contextid = :contextid AND u.deleted = 0 AND u.confirmed = 1
+                       AND (r.shortname = 'student' OR r.archetype = 'student')
+                  ORDER BY u.lastname ASC, u.firstname ASC";
+            return $DB->get_records_sql($sql, ['contextid'=>$context->id], 0, 300);
+        }
+        $like = '%' . $DB->sql_like_escape($query) . '%';
         $sql = "SELECT DISTINCT u.id, u.firstname, u.lastname, u.email
                   FROM {role_assignments} ra JOIN {role} r ON r.id = ra.roleid JOIN {user} u ON u.id = ra.userid
                  WHERE ra.contextid = :contextid AND u.deleted = 0 AND u.confirmed = 1
@@ -2832,6 +3613,292 @@ class manager {
         return true;
     }
 
+
+    public static function get_required_activity_types(\stdClass $edition): array {
+        $raw = strtolower((string)($edition->activitycreationtype ?? $edition->requiredmodname ?? ''));
+        if (strpos($raw, 'assign') !== false || strpos($raw, 'tarea') !== false) {
+            return ['assign'];
+        }
+        return [];
+    }
+
+    public static function get_required_activity_for_edition_by_type(int $editionid, string $type): ?\stdClass {
+        global $DB;
+        if (!in_array($type, ['assign', 'quiz'], true)) {
+            return null;
+        }
+        $edition = self::get_workshop_edition($editionid);
+        $workshop = self::get_workshop((int)$edition->workshopid);
+        $columns = $DB->get_columns('local_ga_workshop_editions');
+
+        $candidatecmids = [];
+        if ($type === 'assign' && isset($columns['requiredassigncmid']) && !empty($edition->requiredassigncmid)) {
+            $candidatecmids[] = (int)$edition->requiredassigncmid;
+        }
+        if ($type === 'quiz' && isset($columns['requiredquizcmid']) && !empty($edition->requiredquizcmid)) {
+            $candidatecmids[] = (int)$edition->requiredquizcmid;
+        }
+        if (!empty($edition->requiredcmid)) {
+            $candidatecmids[] = (int)$edition->requiredcmid;
+        }
+
+        foreach (array_unique($candidatecmids) as $cmid) {
+            $sql = "SELECT cm.id AS cmid, cm.instance, m.name AS modname, COALESCE(a.name, q.name) AS activityname
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                 LEFT JOIN {assign} a ON a.id = cm.instance AND m.name = 'assign'
+                 LEFT JOIN {quiz} q ON q.id = cm.instance AND m.name = 'quiz'
+                     WHERE cm.id = :cmid AND cm.course = :courseid AND m.name = :modname AND cm.deletioninprogress = 0";
+            $linked = $DB->get_record_sql($sql, ['cmid' => $cmid, 'courseid' => (int)$workshop->courseid, 'modname' => $type], IGNORE_MISSING);
+            if ($linked && $DB->record_exists($type, ['id' => (int)$linked->instance])) {
+                return $linked;
+            }
+        }
+
+        $candidates = self::find_candidate_required_activities_by_type($edition, $type);
+        return $candidates ? reset($candidates) : null;
+    }
+
+    public static function find_candidate_required_activities_by_type(\stdClass $edition, string $type): array {
+        global $DB;
+
+        if (!in_array($type, ['assign', 'quiz'], true)) {
+            return [];
+        }
+
+        $workshop = self::get_workshop((int)$edition->workshopid);
+        $courseid = (int)$workshop->courseid;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table($type))) {
+            return [];
+        }
+
+        if ($type === 'assign') {
+            $sql = "SELECT cm.id AS cmid, cm.added, m.name AS modname, a.name AS activityname
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                      JOIN {assign} a ON a.id = cm.instance
+                     WHERE cm.course = :courseid AND m.name = 'assign' AND cm.deletioninprogress = 0
+                  ORDER BY cm.added DESC, cm.id DESC";
+        } else {
+            $sql = "SELECT cm.id AS cmid, cm.added, m.name AS modname, q.name AS activityname
+                      FROM {course_modules} cm
+                      JOIN {modules} m ON m.id = cm.module
+                      JOIN {quiz} q ON q.id = cm.instance
+                     WHERE cm.course = :courseid AND m.name = 'quiz' AND cm.deletioninprogress = 0
+                  ORDER BY cm.added DESC, cm.id DESC";
+        }
+
+        $records = $DB->get_records_sql($sql, ['courseid' => $courseid], 0, 50);
+        $candidates = [];
+        foreach ($records as $r) {
+            $activityname = (string)($r->activityname ?? '');
+            $hay = \core_text::strtolower($activityname);
+            $needle1 = \core_text::strtolower((string)$workshop->name);
+            $needle2 = \core_text::strtolower((string)$workshop->code);
+            $needle3 = \core_text::strtolower($type === 'assign' ? 'tarea' : 'cuestionario');
+
+            if (strpos($hay, $needle1) !== false || strpos($hay, $needle2) !== false || strpos($hay, $needle3) !== false || strpos($hay, 'taller') !== false) {
+                $candidates[] = $r;
+            }
+        }
+        return $candidates;
+    }
+
+    public static function user_can_access_workshop_resources(int $editionid, int $userid): bool {
+        if ($editionid <= 0 || $userid <= 0) {
+            return false;
+        }
+        $edition = self::get_workshop_edition($editionid);
+        $workshop = self::get_workshop((int)$edition->workshopid);
+
+        if (self::can_manage_workshop_instance((int)$workshop->id, $userid)) {
+            return true;
+        }
+
+        $enrolment = self::get_edition_enrolment($editionid, $userid);
+        if (!$enrolment || !in_array((string)($enrolment->status ?? ''), ['enrolled', 'attended'], true)) {
+            return false;
+        }
+
+        // Confirmed attendance proves that the student belongs to the workshop and must
+        // never revoke access to materials merely because status changed from enrolled.
+        if (self::is_user_attended_edition($editionid, $userid)) {
+            return true;
+        }
+
+        if (empty($edition->sessiondate) || time() < (int)$edition->sessiondate) {
+            return false;
+        }
+
+        return true;
+    }
+
+
+    public static function count_edition_certificates(int $editionid): int {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))) {
+            return 0;
+        }
+        return (int)$DB->count_records('local_ga_certificates', ['editionid' => $editionid]);
+    }
+
+    public static function get_internal_task_submission(int $editionid, int $userid): ?\stdClass {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_task_submissions'))) {
+            return null;
+        }
+        $record = $DB->get_record('local_ga_task_submissions', ['editionid' => $editionid, 'userid' => $userid], '*', IGNORE_MISSING);
+        return $record ?: null;
+    }
+
+    public static function save_internal_task_config(int $editionid, string $description, string $url, int $duedate, int $fileitemid): void {
+        global $DB;
+        $edition = self::get_workshop_edition($editionid);
+        $edition->activitycreationtype = 'assign';
+        $edition->requiredmodname = 'assign';
+        $edition->taskdescription = $description;
+        $edition->taskurl = trim($url);
+        $edition->taskduedate = $duedate;
+        $edition->taskfileitemid = $fileitemid;
+        $edition->timemodified = time();
+        $DB->update_record('local_ga_workshop_editions', self::filter_record_to_existing_fields('local_ga_workshop_editions', $edition));
+    }
+
+    public static function save_internal_task_submission(int $editionid, int $userid, int $fileitemid): int {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_task_submissions'))) {
+            return 0;
+        }
+        $now = time();
+        $existing = $DB->get_record('local_ga_task_submissions', ['editionid' => $editionid, 'userid' => $userid], '*', IGNORE_MISSING);
+        $record = (object)[
+            'editionid' => $editionid,
+            'userid' => $userid,
+            'fileitemid' => $fileitemid,
+            'status' => 'submitted',
+            'timemodified' => $now,
+        ];
+        if ($existing) {
+            $record->id = (int)$existing->id;
+            $DB->update_record('local_ga_task_submissions', self::filter_record_to_existing_fields('local_ga_task_submissions', $record));
+            return (int)$record->id;
+        }
+        $record->timecreated = $now;
+        return (int)$DB->insert_record('local_ga_task_submissions', self::filter_record_to_existing_fields('local_ga_task_submissions', $record));
+    }
+
+    public static function store_named_upload(int $coursecontextid, int $itemid, string $inputname, string $filearea): int {
+        global $CFG;
+        require_once($CFG->libdir . '/filelib.php');
+
+        if (empty($_FILES[$inputname]) || empty($_FILES[$inputname]['tmp_name']) || !is_uploaded_file($_FILES[$inputname]['tmp_name'])) {
+            return $itemid;
+        }
+
+        if ($itemid <= 0) {
+            $itemid = time() + random_int(1000, 999999);
+        }
+
+        $fs = get_file_storage();
+        $fs->delete_area_files($coursecontextid, 'local_gestion_actividades', $filearea, $itemid);
+
+        $filename = clean_param($_FILES[$inputname]['name'], PARAM_FILE);
+        if ($filename === '') {
+            $filename = 'archivo';
+        }
+
+        $filerecord = [
+            'contextid' => $coursecontextid,
+            'component' => 'local_gestion_actividades',
+            'filearea' => $filearea,
+            'itemid' => $itemid,
+            'filepath' => '/',
+            'filename' => $filename,
+        ];
+
+        $fs->create_file_from_pathname($filerecord, $_FILES[$inputname]['tmp_name']);
+        return $itemid;
+    }
+
+    public static function get_filearea_url(\context $context, string $filearea, int $itemid): string {
+        if ($itemid <= 0) {
+            return '';
+        }
+        $fs = get_file_storage();
+        $files = $fs->get_area_files($context->id, 'local_gestion_actividades', $filearea, $itemid, 'filename', false);
+        if (!$files) {
+            return '';
+        }
+        $file = reset($files);
+        return \moodle_url::make_pluginfile_url($context->id, 'local_gestion_actividades', $filearea, $itemid, $file->get_filepath(), $file->get_filename())->out(false);
+    }
+
+    public static function user_has_submitted_internal_task(int $editionid, int $userid): bool {
+        $sub = self::get_internal_task_submission($editionid, $userid);
+        return $sub && !empty($sub->fileitemid);
+    }
+
+    public static function get_internal_task_grade(int $editionid, int $userid): ?float {
+        $sub = self::get_internal_task_submission($editionid, $userid);
+        if (!$sub || !property_exists($sub, 'grade') || $sub->grade === null || $sub->grade === '') {
+            return null;
+        }
+        return (float)$sub->grade;
+    }
+
+    public static function user_has_passing_internal_task_grade(int $editionid, int $userid): bool {
+        $grade = self::get_internal_task_grade($editionid, $userid);
+        return $grade !== null && $grade >= 5.0;
+    }
+
+    public static function save_internal_task_grade(
+        int $editionid,
+        int $userid,
+        ?float $grade,
+        int $graderid,
+        bool $syncgradebook = true
+    ): bool {
+        global $DB;
+
+        if ($editionid <= 0 || $userid <= 0 || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_task_submissions'))) {
+            return false;
+        }
+
+        $submission = $DB->get_record('local_ga_task_submissions', ['editionid' => $editionid, 'userid' => $userid], '*', IGNORE_MISSING);
+        if (!$submission || empty($submission->fileitemid)) {
+            // No se guarda nota si todavía no hay entrega real de tarea.
+            return false;
+        }
+
+        if ($grade !== null) {
+            if ($grade < 0) {
+                $grade = 0.0;
+            }
+            if ($grade > 10) {
+                $grade = 10.0;
+            }
+        }
+
+        $submission->grade = $grade;
+        $submission->gradedby = $graderid;
+        $submission->timegraded = time();
+        $submission->timemodified = time();
+        $DB->update_record('local_ga_task_submissions', self::filter_record_to_existing_fields('local_ga_task_submissions', $submission));
+        if ($syncgradebook) {
+            $courseid = (int)$DB->get_field_sql(
+                "SELECT w.courseid
+                   FROM {local_ga_workshop_editions} e
+                   JOIN {local_ga_workshops} w ON w.id = e.workshopid
+                  WHERE e.id = :editionid",
+                ['editionid' => $editionid]
+            );
+            if ($courseid > 0) {
+                grade_manager::sync_user_for_course_safely($courseid, $userid);
+            }
+        }
+        return true;
+    }
+
     public static function detect_required_activity_type(\stdClass $edition): string {
         // Try all known/possible field names used by previous alpha versions.
         foreach ([
@@ -2847,6 +3914,8 @@ class manager {
             'task_type',
             'modtype',
             'modulename',
+            'requiredmodname',
+            'activitycreationtype',
             'requiredmod',
             'requiredmodule'
         ] as $field) {
@@ -2881,7 +3950,28 @@ class manager {
     public static function update_edition_required_cmid(int $editionid, int $cmid): bool {
         global $DB;
         $edition = self::get_workshop_edition($editionid);
-        $edition->requiredcmid = $cmid;
+        $cm = $DB->get_record_sql("SELECT cm.id, m.name AS modname
+                                      FROM {course_modules} cm
+                                      JOIN {modules} m ON m.id = cm.module
+                                     WHERE cm.id = :cmid", ['cmid' => $cmid], IGNORE_MISSING);
+        if (!$cm || !in_array((string)$cm->modname, ['assign', 'quiz'], true)) {
+            return false;
+        }
+
+        $columns = $DB->get_columns('local_ga_workshop_editions');
+        if ($cm->modname === 'assign' && isset($columns['requiredassigncmid'])) {
+            $edition->requiredassigncmid = $cmid;
+        } else if ($cm->modname === 'quiz' && isset($columns['requiredquizcmid'])) {
+            $edition->requiredquizcmid = $cmid;
+        }
+
+        // Campo heredado: mantenerlo para compatibilidad, pero no depender de él para ambos tipos.
+        if (isset($columns['requiredcmid'])) {
+            $edition->requiredcmid = $cmid;
+        }
+        if (isset($columns['requiredmodname'])) {
+            $edition->requiredmodname = trim((string)($edition->activitycreationtype ?? $cm->modname));
+        }
         $edition->timemodified = time();
         $DB->update_record('local_ga_workshop_editions', self::filter_record_to_existing_fields('local_ga_workshop_editions', $edition));
         return true;
@@ -3341,12 +4431,19 @@ class manager {
         $workshop = self::get_workshop((int)$edition->workshopid);
         $courseid = (int)$workshop->courseid;
 
+        $now = time();
         $columns = $DB->get_columns('local_ga_workshop_editions');
         if (isset($columns['status'])) {
-            $edition->status = 'finished';
+            $edition->status = 'archived';
+        }
+        if (isset($columns['archived'])) {
+            $edition->archived = 1;
+        }
+        if (isset($columns['timearchived'])) {
+            $edition->timearchived = $now;
         }
         if (isset($columns['timemodified'])) {
-            $edition->timemodified = time();
+            $edition->timemodified = $now;
         }
         $DB->update_record('local_ga_workshop_editions', self::filter_record_to_existing_fields('local_ga_workshop_editions', $edition));
 
@@ -3359,10 +4456,20 @@ class manager {
         }
 
         try {
+            // El taller finalizado no debe seguir apareciendo en la sección del curso.
+            self::delete_workshop_course_entries($workshop);
             self::hard_archive_workshop_course_entries($workshop);
             self::hard_archive_required_activities_in_course($courseid);
         } catch (\Throwable $e) {
             // Non-fatal.
+        }
+
+        // Rebuild the visible Type A/Type B section immediately. The teacher must not
+        // need to run the administrative repair after finishing a workshop.
+        try {
+            self::sync_workshop_section_summary($courseid, self::get_workshop_type($workshop));
+        } catch (\Throwable $e) {
+            // Keep the archive operation valid even if the visual refresh fails.
         }
 
         require_once($CFG->dirroot . '/course/lib.php');
@@ -3375,9 +4482,6 @@ class manager {
 
     public static function is_edition_finished(\stdClass $edition): bool {
         if (!empty($edition->status) && in_array((string)$edition->status, ['finished', 'archived', 'closed_finished'], true)) {
-            return true;
-        }
-        if (!empty($edition->sessiondate) && (int)$edition->sessiondate < time() && !empty($edition->autoarchive)) {
             return true;
         }
         return false;
@@ -3426,26 +4530,26 @@ class manager {
 
         $meta = [];
         if ($date !== '') {
-            $meta[] = html_writer::span(get_string('date', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . s($date);
+            $meta[] = \html_writer::span(get_string('date', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . s($date);
         }
-        $meta[] = html_writer::span(get_string('workshophours', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . $hours;
+        $meta[] = \html_writer::span(get_string('workshophours', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . $hours;
         if ($places !== '') {
-            $meta[] = html_writer::span(get_string('places', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . s($places);
+            $meta[] = \html_writer::span(get_string('places', 'local_gestion_actividades') . ': ', 'local-ga-meta-label') . s($places);
         }
 
-        $html = html_writer::start_div('local-ga-course-card', [
+        $html = \html_writer::start_div('local-ga-course-card', [
             'style' => 'border-left:4px solid #0f6cbf;background:#f7f9fb;padding:18px 20px;margin:14px 0;border-radius:10px;'
         ]);
-        $html .= html_writer::tag('h4', s($workshop->code . ' - ' . $workshop->name), [
+        $html .= \html_writer::tag('h4', s($workshop->code . ' - ' . $workshop->name), [
             'style' => 'margin:0 0 6px 0;font-weight:700;'
         ]);
         if ($desc !== '') {
-            $html .= html_writer::tag('p', s($desc), ['style' => 'margin:0 0 10px 0;']);
+            $html .= \html_writer::tag('p', s($desc), ['style' => 'margin:0 0 10px 0;']);
         }
-        $html .= html_writer::div(implode(' · ', $meta), 'local-ga-course-meta', [
+        $html .= \html_writer::div(implode(' · ', $meta), 'local-ga-course-meta', [
             'style' => 'margin:0 0 12px 0;color:#1f2d3d;'
         ]);
-        $html .= html_writer::link($url, get_string('viewworkshop', 'local_gestion_actividades'), [
+        $html .= \html_writer::link($url, get_string('viewworkshop', 'local_gestion_actividades'), [
             'class' => 'btn btn-secondary btn-sm',
             'style' => 'margin-right:8px;'
         ]);
@@ -3454,16 +4558,16 @@ class manager {
             try {
                 $enrol = self::get_user_edition_enrolment((int)$edition->id, (int)$USER->id);
                 if ($enrol) {
-                    $html .= html_writer::span(get_string('alreadyenrolledshort', 'local_gestion_actividades'), 'badge badge-success', ['style' => 'padding:8px 10px;']);
+                    $html .= \html_writer::span(get_string('alreadyenrolledshort', 'local_gestion_actividades'), 'badge badge-success', ['style' => 'padding:8px 10px;']);
                 } else {
                     $enrolurl = new \moodle_url('/local/gestion_actividades/workshop_view.php', ['id' => $workshop->id, 'enrol' => 1, 'sesskey' => sesskey()]);
-                    $html .= html_writer::link($enrolurl, get_string('enrolme', 'local_gestion_actividades'), ['class' => 'btn btn-primary btn-sm']);
+                    $html .= \html_writer::link($enrolurl, get_string('enrolme', 'local_gestion_actividades'), ['class' => 'btn btn-primary btn-sm']);
                 }
             } catch (\Throwable $e) {
                 // Ignore.
             }
         }
-        $html .= html_writer::end_div();
+        $html .= \html_writer::end_div();
 
         return $html;
     }
@@ -3758,20 +4862,31 @@ class manager {
 
     public static function user_is_certificate_eligible(int $editionid, int $userid): bool {
         $edition = self::get_workshop_edition($editionid);
-        $attended = self::is_user_attended_edition($editionid, $userid);
-        if (!$attended) {
+        $workshop = self::get_workshop((int)$edition->workshopid);
+
+        if (!self::is_user_attended_edition($editionid, $userid)) {
             return false;
         }
-        $cmid = !empty($edition->requiredcmid) ? (int)$edition->requiredcmid : 0;
-        if ($cmid <= 0) {
+
+        if (self::is_typeb_workshop($workshop)) {
+            // En Tipo B la asistencia es el único requisito para reconocer el taller.
+            // El comentario sigue siendo obligatorio para completar el portafolio.
             return true;
         }
-        return self::user_completed_required_activity($userid, $cmid) || self::user_submitted_required_activity($userid, $cmid);
+
+        // Todos los Talleres Tipo A exigen tarea entregada y nota igual o superior a 5.
+        return self::user_has_submitted_internal_task($editionid, $userid)
+            && self::user_has_passing_internal_task_grade($editionid, $userid);
     }
 
     public static function replace_certificate_placeholders(string $html, \stdClass $user, \stdClass $workshop, \stdClass $edition, string $certcode): string {
         $hours = !empty($workshop->hours) ? (string)(float)$workshop->hours : '';
         $date = !empty($edition->sessiondate) ? userdate((int)$edition->sessiondate, get_string('strftimedatefullshort', 'langconfig')) : userdate(time(), get_string('strftimedatefullshort', 'langconfig'));
+        $taskgrade = null;
+        if (!empty($edition->id) && !empty($user->id) && in_array('assign', self::get_required_activity_types($edition), true)) {
+            $taskgrade = self::get_internal_task_grade((int)$edition->id, (int)$user->id);
+        }
+        $taskgradestring = $taskgrade !== null ? format_float((float)$taskgrade, 2, true) : '';
         $replacements = [
             '{alumno}' => fullname($user),
             '{taller}' => (string)$workshop->name,
@@ -3781,6 +4896,8 @@ class manager {
             '{curso_academico}' => userdate(time(), '%Y'),
             '{fecha_emision}' => userdate(time(), get_string('strftimedatefullshort', 'langconfig')),
             '{codigo_certificado}' => $certcode,
+            '{nota_tarea}' => $taskgradestring,
+            '{nota_tarea_texto}' => $taskgradestring !== '' ? 'Nota de la tarea: ' . $taskgradestring . ' / 10' : '',
         ];
         return str_replace(array_keys($replacements), array_values($replacements), $html);
     }
@@ -3814,11 +4931,26 @@ class manager {
 
         $template = self::get_certificate_template_html();
         $content = self::replace_certificate_placeholders($template, $user, $workshop, $edition, $certcode);
+        if (self::is_typeb_workshop($workshop)) {
+            $content .= '<p style="text-align:center;"><strong>Taller Tipo B</strong></p>';
+        }
 
         $pdf->SetTextColor(40, 40, 40);
         $pdf->SetFont('helvetica', '', 13);
         $html = '<div style="font-size:13pt;line-height:1.55;text-align:justify;color:#222;">' . $content . '</div>';
         $pdf->writeHTMLCell(160, 0, 25, 100, $html, 0, 1, false, true, 'J', true);
+
+        if (!empty($edition->id) && !empty($user->id) && in_array('assign', self::get_required_activity_types($edition), true)) {
+            $taskgrade = self::get_internal_task_grade((int)$edition->id, (int)$user->id);
+            if ($taskgrade !== null) {
+                $pdf->SetFont('helvetica', 'B', 11);
+                $pdf->SetTextColor($green[0], $green[1], $green[2]);
+                $gradehtml = '<div style="font-size:11pt;color:#2b4b1e;text-align:center;">'
+                    . '<strong>Nota de la tarea:</strong> ' . s(format_float((float)$taskgrade, 2, true)) . ' / 10'
+                    . '</div>';
+                $pdf->writeHTMLCell(160, 0, 25, 166, $gradehtml, 0, 1, false, true, 'C', true);
+            }
+        }
 
         $pdf->SetFont('helvetica', '', 11);
         $pdf->SetTextColor(80, 80, 80);
@@ -3839,7 +4971,7 @@ class manager {
         return $pdf->Output('', 'S');
     }
 
-    public static function generate_certificate_for_user(int $editionid, int $userid): ?\stdClass {
+    public static function generate_certificate_for_user(int $editionid, int $userid, bool $syncgrades = true): ?\stdClass {
         global $DB;
 
         if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))) {
@@ -3862,7 +4994,9 @@ class manager {
         $context = \context_course::instance((int)$course->id);
 
         $now = time();
-        $certcode = 'TA-' . (int)$editionid . '-' . (int)$userid . '-' . strtoupper(substr(sha1($editionid . ':' . $userid . ':' . $now), 0, 8));
+        $certtype = self::is_typeb_workshop($workshop) ? 'typeb' : 'typea';
+        $certprefix = $certtype === 'typeb' ? 'TB-' : 'TA-';
+        $certcode = $certprefix . (int)$editionid . '-' . (int)$userid . '-' . strtoupper(substr(sha1($editionid . ':' . $userid . ':' . $now), 0, 8));
         $filename = clean_filename('certificado_' . $workshop->code . '_' . $userid . '.pdf');
 
         $record = (object)[
@@ -3870,6 +5004,7 @@ class manager {
             'courseid' => (int)$course->id,
             'workshopid' => (int)$workshop->id,
             'editionid' => $editionid,
+            'certificatetype' => $certtype,
             'certcode' => $certcode,
             'filename' => $filename,
             'status' => 'generated',
@@ -3893,30 +5028,444 @@ class manager {
         ];
         $fs->create_file_from_string($filerecord, $pdf);
 
+        self::invalidate_block_cache_for_user($userid);
+        if ($syncgrades) {
+            grade_manager::sync_user_for_course_safely((int)$course->id, $userid);
+        }
+
         return $DB->get_record('local_ga_certificates', ['id' => $certid], '*', MUST_EXIST);
     }
 
+
+    public static function ensure_typeb_reflections_table(): bool {
+        global $DB;
+        return $DB->get_manager()->table_exists(new \xmldb_table('local_ga_typeb_reflections'));
+    }
+
+    public static function get_typeb_reflection(int $editionid, int $userid): ?\stdClass {
+        global $DB;
+        if (!self::ensure_typeb_reflections_table()) {
+            return null;
+        }
+        $record = $DB->get_record('local_ga_typeb_reflections', ['editionid' => $editionid, 'userid' => $userid], '*', IGNORE_MISSING);
+        return $record ?: null;
+    }
+
+    public static function user_has_typeb_reflection(int $editionid, int $userid): bool {
+        $record = self::get_typeb_reflection($editionid, $userid);
+        return $record && trim((string)($record->reflectiontext ?? '')) !== '';
+    }
+
+    public static function save_typeb_reflection(int $editionid, int $userid, string $text): bool {
+        global $DB;
+        if (!self::ensure_typeb_reflections_table()) {
+            return false;
+        }
+        $text = trim(clean_param($text, PARAM_TEXT));
+        if ($text === '') {
+            return false;
+        }
+        $now = time();
+        $existing = $DB->get_record('local_ga_typeb_reflections', ['editionid' => $editionid, 'userid' => $userid], '*', IGNORE_MISSING);
+        $record = (object)[
+            'editionid' => $editionid,
+            'userid' => $userid,
+            'reflectiontext' => $text,
+            'timemodified' => $now,
+        ];
+        if ($existing) {
+            $record->id = (int)$existing->id;
+            $DB->update_record('local_ga_typeb_reflections', $record);
+        } else {
+            $record->timecreated = $now;
+            $DB->insert_record('local_ga_typeb_reflections', $record);
+        }
+        grade_manager::sync_user_safely($userid);
+        return true;
+    }
+
+    public static function list_user_typeb_workshop_certificates(int $userid): array {
+        global $DB;
+        if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))) {
+            return [];
+        }
+        $columns = $DB->get_columns('local_ga_certificates');
+        $typefilter = isset($columns['certificatetype']) ? " AND cert.certificatetype = 'typeb'" : " AND 1=0";
+        $sql = "SELECT cert.*, c.fullname AS coursename, w.code AS workshopcode, w.name AS workshopname, w.hours,
+                       e.name AS editionname, e.editioncode, tr.reflectiontext
+                  FROM {local_ga_certificates} cert
+             LEFT JOIN {course} c ON c.id = cert.courseid
+             LEFT JOIN {local_ga_workshops} w ON w.id = cert.workshopid
+             LEFT JOIN {local_ga_workshop_editions} e ON e.id = cert.editionid
+             LEFT JOIN {local_ga_typeb_reflections} tr ON tr.editionid = cert.editionid AND tr.userid = cert.userid
+                 WHERE cert.userid = :userid $typefilter
+              ORDER BY cert.timeissued DESC, cert.id DESC";
+        return $DB->get_records_sql($sql, ['userid' => $userid]);
+    }
+
+
+    public static function certificate_missing_requirements(int $editionid, int $userid): array {
+        $edition = self::get_workshop_edition($editionid);
+        $workshop = self::get_workshop((int)$edition->workshopid);
+        $missing = [];
+
+        if (!self::is_user_attended_edition($editionid, $userid)) {
+            $missing[] = 'asistencia';
+        }
+
+        if (self::is_typeb_workshop($workshop)) {
+            return $missing;
+        }
+
+        if (!self::user_has_submitted_internal_task($editionid, $userid)) {
+            $missing[] = 'tarea';
+        } else if (!self::user_has_passing_internal_task_grade($editionid, $userid)) {
+            $missing[] = 'nota de tarea igual o superior a 5';
+        }
+
+        return $missing;
+    }
+
+    protected static function mail_from_user(): \stdClass {
+        if (class_exists('\core_user')) {
+            try {
+                return \core_user::get_noreply_user();
+            } catch (\Throwable $e) {
+                // Fall back below.
+            }
+        }
+        return get_admin();
+    }
+
+    protected static function send_plain_notification_email(\stdClass $to, string $subject, string $message, string $htmlmessage = ''): bool {
+        if (empty($to->email) || !empty($to->deleted) || (isset($to->suspended) && !empty($to->suspended))) {
+            return false;
+        }
+
+        try {
+            $from = self::mail_from_user();
+            return email_to_user($to, $from, $subject, $message, $htmlmessage ?: text_to_html($message));
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    protected static function notify_certificate_available(\stdClass $user, \stdClass $workshop, \stdClass $edition, ?\stdClass $certificate): bool {
+        $workshopname = trim((string)$workshop->code . ' - ' . (string)$workshop->name);
+        $url = $certificate && !empty($certificate->id)
+            ? (new \moodle_url('/local/gestion_actividades/certificate_download.php', ['id' => (int)$certificate->id]))->out(false)
+            : (new \moodle_url('/local/gestion_actividades/mycertificates.php'))->out(false);
+
+        $subject = 'Certificado disponible: ' . $workshopname;
+        $message = "Hola " . fullname($user) . ",\n\n"
+            . "Ya está disponible tu certificado del taller " . $workshopname . ".\n\n"
+            . "Puedes descargarlo aquí:\n" . $url . "\n\n"
+            . "Un saludo.";
+        $html = \html_writer::tag('p', 'Hola ' . s(fullname($user)) . ',')
+            . \html_writer::tag('p', 'Ya está disponible tu certificado del taller ' . s($workshopname) . '.')
+            . \html_writer::tag('p', \html_writer::link($url, 'Descargar certificado'))
+            . \html_writer::tag('p', 'Un saludo.');
+
+        return self::send_plain_notification_email($user, $subject, $message, $html);
+    }
+
+    protected static function notify_certificate_missing(\stdClass $user, \stdClass $workshop, \stdClass $edition, array $missing): bool {
+        $workshopname = trim((string)$workshop->code . ' - ' . (string)$workshop->name);
+        $missing = array_values(array_unique($missing));
+        $missingtext = count($missing) > 1 ? implode(' y ', $missing) : ($missing[0] ?? 'requisitos');
+
+        $subject = 'Certificado no generado: ' . $workshopname;
+        $message = "Hola " . fullname($user) . ",\n\n"
+            . "No se ha generado tu certificado del taller " . $workshopname . " porque falta: " . $missingtext . ".\n\n"
+            . "Un saludo.";
+        $html = \html_writer::tag('p', 'Hola ' . s(fullname($user)) . ',')
+            . \html_writer::tag('p', 'No se ha generado tu certificado del taller ' . s($workshopname) . ' porque falta: ' . s($missingtext) . '.')
+            . \html_writer::tag('p', 'Un saludo.');
+
+        return self::send_plain_notification_email($user, $subject, $message, $html);
+    }
+
+    protected static function notify_certificate_summary_to_staff(int $editionid, \stdClass $summary): int {
+        global $DB;
+
+        $edition = self::get_workshop_edition($editionid);
+        $workshop = self::get_workshop((int)$edition->workshopid);
+        $workshopname = trim((string)$workshop->code . ' - ' . (string)$workshop->name);
+        $url = (new \moodle_url('/local/gestion_actividades/certificates.php', ['editionid' => $editionid]))->out(false);
+
+        $recipients = [];
+
+        foreach (self::get_edition_teachers($editionid) as $teacher) {
+            $recipients[(int)$teacher->id] = $teacher;
+        }
+
+        foreach (self::list_authorized_users() as $manager) {
+            $recipients[(int)$manager->id] = $manager;
+        }
+
+        $subject = 'Certificados disponibles: ' . $workshopname;
+        $message = "Los certificados del taller " . $workshopname . " ya están disponibles.\n\n"
+            . "Generados nuevos: " . (int)$summary->generated . "\n"
+            . "Ya existentes: " . (int)$summary->existing . "\n"
+            . "No elegibles: " . (int)$summary->skipped . "\n\n"
+            . "Ver certificados:\n" . $url . "\n\n"
+            . "Un saludo.";
+        $html = \html_writer::tag('p', 'Los certificados del taller ' . s($workshopname) . ' ya están disponibles.')
+            . \html_writer::tag('ul',
+                \html_writer::tag('li', 'Generados nuevos: ' . (int)$summary->generated)
+                . \html_writer::tag('li', 'Ya existentes: ' . (int)$summary->existing)
+                . \html_writer::tag('li', 'No elegibles: ' . (int)$summary->skipped)
+            )
+            . \html_writer::tag('p', \html_writer::link($url, 'Ver certificados'));
+
+        $sent = 0;
+        foreach ($recipients as $recipient) {
+            if (self::send_plain_notification_email($recipient, $subject, $message, $html)) {
+                $sent++;
+            }
+        }
+
+        return $sent;
+    }
+
     public static function generate_certificates_for_edition(int $editionid): \stdClass {
-        $summary = (object)['eligible' => 0, 'generated' => 0, 'existing' => 0, 'skipped' => 0];
+        global $DB;
+
+        $summary = (object)[
+            'eligible' => 0,
+            'generated' => 0,
+            'existing' => 0,
+            'skipped' => 0,
+            'studentemails' => 0,
+            'staffemails' => 0,
+        ];
+
+        $edition = self::get_workshop_edition($editionid);
+        $workshop = self::get_workshop((int)$edition->workshopid);
 
         $students = self::list_edition_enrolled_users_ultrasafe($editionid);
         foreach ($students as $student) {
-            if (self::user_is_certificate_eligible($editionid, (int)$student->userid)) {
+            $userid = (int)$student->userid;
+            $user = $DB->get_record('user', ['id' => $userid, 'deleted' => 0], '*', IGNORE_MISSING);
+            if (!$user) {
+                $summary->skipped++;
+                continue;
+            }
+
+            if (self::user_is_certificate_eligible($editionid, $userid)) {
                 $summary->eligible++;
-                $before = self::get_user_certificate_for_edition($editionid, (int)$student->userid);
-                $cert = self::generate_certificate_for_user($editionid, (int)$student->userid);
+                $before = self::get_user_certificate_for_edition($editionid, $userid);
+                $cert = self::generate_certificate_for_user($editionid, $userid, false);
                 if ($cert && $before) {
                     $summary->existing++;
                 } else if ($cert) {
                     $summary->generated++;
                 }
+
+                if ($cert && self::notify_certificate_available($user, $workshop, $edition, $cert)) {
+                    $summary->studentemails++;
+                }
             } else {
                 $summary->skipped++;
+                $missing = self::certificate_missing_requirements($editionid, $userid);
+                if (self::notify_certificate_missing($user, $workshop, $edition, $missing)) {
+                    $summary->studentemails++;
+                }
             }
         }
 
+        if ($summary->generated > 0) {
+            grade_manager::sync_course_safely((int)$workshop->courseid);
+        }
+        $summary->staffemails = self::notify_certificate_summary_to_staff($editionid, $summary);
+
         return $summary;
     }
+
+
+
+    public static function ensure_typeb_transfers_table(): bool {
+        global $DB;
+        return $DB->get_manager()->table_exists(new \xmldb_table('local_ga_typeb_transfers'));
+    }
+
+    public static function get_user_typeb_transfer_totals(int $userid): \stdClass {
+        global $DB;
+        $out = (object)['count' => 0, 'hours' => 0.0];
+        if ($userid <= 0 || !self::ensure_typeb_transfers_table()) {
+            return $out;
+        }
+        $row = $DB->get_record_sql("SELECT COUNT(id) AS cnt, COALESCE(SUM(hours), 0) AS hours
+                                      FROM {local_ga_typeb_transfers}
+                                     WHERE userid = :userid AND status = :status", ['userid' => $userid, 'status' => 'active'], IGNORE_MISSING);
+        if ($row) {
+            $out->count = (int)($row->cnt ?? 0);
+            $out->hours = (float)($row->hours ?? 0);
+        }
+        return $out;
+    }
+
+    public static function list_user_typeb_transfers(int $userid): array {
+        global $DB;
+        if ($userid <= 0 || !self::ensure_typeb_transfers_table()) {
+            return [];
+        }
+        $sql = "SELECT t.*, w.name AS workshopname, w.code AS workshopcode, e.name AS editionname, e.sessiondate, c.certcode
+                  FROM {local_ga_typeb_transfers} t
+             LEFT JOIN {local_ga_workshops} w ON w.id = t.workshopid
+             LEFT JOIN {local_ga_workshop_editions} e ON e.id = t.editionid
+             LEFT JOIN {local_ga_certificates} c ON c.id = t.certificateid
+                 WHERE t.userid = :userid AND t.status = :status
+              ORDER BY t.timecreated DESC, t.id DESC";
+        return $DB->get_records_sql($sql, ['userid' => $userid, 'status' => 'active']);
+    }
+
+    public static function list_all_typeb_transfers(): array {
+        global $DB;
+        if (!self::ensure_typeb_transfers_table()) {
+            return [];
+        }
+        $sql = "SELECT t.*, u.firstname, u.lastname, u.email,
+                       w.name AS workshopname, w.code AS workshopcode, w.hours AS originalhours,
+                       e.name AS editionname, e.sessiondate
+                  FROM {local_ga_typeb_transfers} t
+                  JOIN {user} u ON u.id = t.userid
+             LEFT JOIN {local_ga_workshops} w ON w.id = t.workshopid
+             LEFT JOIN {local_ga_workshop_editions} e ON e.id = t.editionid
+                 WHERE t.status = :status
+              ORDER BY t.timecreated DESC, u.lastname ASC, u.firstname ASC";
+        return $DB->get_records_sql($sql, ['status' => 'active']);
+    }
+
+    public static function list_user_transferable_typea_certificates(int $userid): array {
+        global $DB;
+        if ($userid <= 0 || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))
+            || !$DB->get_manager()->table_exists(new \xmldb_table('local_ga_workshops'))
+            || !self::ensure_typeb_transfers_table()) {
+            return [];
+        }
+        $columns = $DB->get_columns('local_ga_certificates');
+        $typefilter = isset($columns['certificatetype']) ? " AND (c.certificatetype = 'typea' OR c.certificatetype IS NULL OR c.certificatetype = '')" : '';
+        $sql = "SELECT c.id, c.userid, c.courseid, c.workshopid, c.editionid, c.certcode, c.timeissued,
+                       w.name AS workshopname, w.code AS workshopcode, w.hours,
+                       e.name AS editionname, e.sessiondate
+                  FROM {local_ga_certificates} c
+                  JOIN {local_ga_workshops} w ON w.id = c.workshopid
+                  JOIN {local_ga_workshop_editions} e ON e.id = c.editionid
+             LEFT JOIN {local_ga_typeb_transfers} t ON t.certificateid = c.id AND t.status = 'active'
+                 WHERE c.userid = :userid
+                   $typefilter
+                   AND t.id IS NULL
+              ORDER BY c.timeissued DESC, e.sessiondate DESC";
+        $records = $DB->get_records_sql($sql, ['userid' => $userid]);
+        $window = self::get_user_transfer_window($userid);
+        $maximum = (float)($window->maxtransfer ?? 0);
+        foreach ($records as $id => $record) {
+            $hours = round(max(0.0, (float)($record->hours ?? 0)), 2);
+            if ($hours <= 0 || $hours > $maximum + 0.001) {
+                unset($records[$id]);
+            }
+        }
+        return $records;
+    }
+
+    public static function get_user_transfer_window(int $userid): \stdClass {
+        $typeacerts = self::list_user_certificates($userid);
+        $typeahours = 0.0;
+        foreach ($typeacerts as $cert) {
+            $typeahours += (float)($cert->hours ?? 0);
+        }
+        if (class_exists('local_gestion_actividades\\local\\institutional_hours')) {
+            try {
+                $typeahours += (float)institutional_hours::total_typea_hours($userid);
+            } catch (\Throwable $e) {
+                // Ignore; do not block transfer page due to optional institutional table.
+            }
+        }
+        $transfers = self::get_user_typeb_transfer_totals($userid);
+        $typeahours = max(0.0, $typeahours - (float)$transfers->hours);
+
+        $typebhours = (float)$transfers->hours;
+        if (class_exists('local_gestion_actividades\\local\\portfolio_typeb')) {
+            try {
+                $typebhours += (float)portfolio_typeb::total_validated_hours($userid);
+            } catch (\Throwable $e) {
+                // Ignore optional legacy table issues.
+            }
+        }
+        if (class_exists('local_gestion_actividades\\local\\institutional_hours')) {
+            try {
+                $typebhours += (float)institutional_hours::total_typeb_hours($userid);
+            } catch (\Throwable $e) {
+                // Ignore optional institutional table issues.
+            }
+        }
+        foreach (self::list_user_typeb_workshop_certificates($userid) as $cert) {
+            $typebhours += (float)($cert->hours ?? 0);
+        }
+
+        $excessa = max(0.0, $typeahours - 32.0);
+        $remainingb = max(0.0, 22.0 - $typebhours);
+        $maxtransfer = min($excessa, $remainingb);
+
+        return (object)[
+            'typeahours' => round($typeahours, 2),
+            'typebhours' => round($typebhours, 2),
+            'excessa' => round($excessa, 2),
+            'remainingb' => round($remainingb, 2),
+            'maxtransfer' => round($maxtransfer, 2),
+            'cantransfer' => $maxtransfer > 0.0,
+        ];
+    }
+
+    public static function transfer_typea_certificate_to_typeb(int $userid, int $certificateid, string $reflectiontext): int {
+        global $DB;
+
+        $userid = max(0, $userid);
+        $certificateid = max(0, $certificateid);
+        $reflectiontext = trim($reflectiontext);
+        if ($userid <= 0 || $certificateid <= 0 || $reflectiontext === '' || !self::ensure_typeb_transfers_table()) {
+            return 0;
+        }
+        if ($DB->record_exists('local_ga_typeb_transfers', ['certificateid' => $certificateid, 'status' => 'active'])) {
+            return 0;
+        }
+
+        $options = self::list_user_transferable_typea_certificates($userid);
+        if (empty($options[$certificateid])) {
+            return 0;
+        }
+        $cert = $options[$certificateid];
+        $window = self::get_user_transfer_window($userid);
+        if (empty($window->cantransfer)) {
+            return 0;
+        }
+
+        $hours = round(max(0.0, (float)($cert->hours ?? 0)), 2);
+        // Solo se permiten talleres completos; nunca se recortan horas para encajar.
+        if ($hours <= 0 || $hours > (float)$window->maxtransfer + 0.001) {
+            return 0;
+        }
+
+        $now = time();
+        $record = (object)[
+            'userid' => $userid,
+            'certificateid' => $certificateid,
+            'workshopid' => (int)$cert->workshopid,
+            'editionid' => (int)$cert->editionid,
+            'courseid' => (int)$cert->courseid,
+            'hours' => $hours,
+            'reflectiontext' => $reflectiontext,
+            'status' => 'active',
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ];
+        $id = (int)$DB->insert_record('local_ga_typeb_transfers', $record);
+        self::invalidate_block_cache_for_user($userid);
+        grade_manager::sync_user_safely($userid);
+        return $id;
+    }
+
 
     public static function get_user_certificate_for_edition(int $editionid, int $userid): ?\stdClass {
         global $DB;
@@ -3931,12 +5480,14 @@ class manager {
         if (!$DB->get_manager()->table_exists(new \xmldb_table('local_ga_certificates'))) {
             return [];
         }
+        $columns = $DB->get_columns('local_ga_certificates');
+        $typefilter = isset($columns['certificatetype']) ? " AND (c.certificatetype = 'typea' OR c.certificatetype IS NULL OR c.certificatetype = '')" : '';
         $sql = "SELECT c.*, w.name AS workshopname, w.code AS workshopcode, w.hours, e.name AS editionname, e.sessiondate, co.fullname AS coursename
                   FROM {local_ga_certificates} c
                   JOIN {local_ga_workshops} w ON w.id = c.workshopid
                   JOIN {local_ga_workshop_editions} e ON e.id = c.editionid
                   JOIN {course} co ON co.id = c.courseid
-                 WHERE c.userid = :userid
+                 WHERE c.userid = :userid $typefilter
               ORDER BY c.timeissued DESC";
         return $DB->get_records_sql($sql, ['userid' => $userid]);
     }
@@ -3955,5 +5506,71 @@ class manager {
         return $DB->get_records_sql($sql, ['editionid' => $editionid]);
     }
 
+
+
+    private static function invalidate_block_cache_for_user(int $userid): void {
+        global $CFG;
+
+        $userid = max(0, $userid);
+        if ($userid <= 0) {
+            return;
+        }
+
+        try {
+            if (!function_exists('block_gestion_hee_invalidate_user_cache')) {
+                $blocklib = $CFG->dirroot . '/blocks/gestion_hee/lib.php';
+                if (is_readable($blocklib)) {
+                    require_once($blocklib);
+                }
+            }
+            if (function_exists('block_gestion_hee_invalidate_user_cache')) {
+                block_gestion_hee_invalidate_user_cache($userid);
+            }
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('No se ha podido invalidar la caché del bloque Gestión HEE: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+    }
+
+    private static function invalidate_block_cache_for_workshop_users(int $workshopid): void {
+        global $DB;
+
+        $workshopid = max(0, $workshopid);
+        if ($workshopid <= 0) {
+            return;
+        }
+
+        $userids = [];
+        $dbman = $DB->get_manager();
+
+        try {
+            if ($dbman->table_exists(new \xmldb_table('local_ga_certificates'))) {
+                $rows = $DB->get_records('local_ga_certificates', ['workshopid' => $workshopid], '', 'id, userid');
+                foreach ($rows as $row) {
+                    if (!empty($row->userid)) {
+                        $userids[] = (int)$row->userid;
+                    }
+                }
+            }
+
+            if ($dbman->table_exists(new \xmldb_table('local_ga_hour_history'))) {
+                $rows = $DB->get_records('local_ga_hour_history', ['workshopid' => $workshopid], '', 'id, userid');
+                foreach ($rows as $row) {
+                    if (!empty($row->userid)) {
+                        $userids[] = (int)$row->userid;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            if (function_exists('debugging')) {
+                debugging('No se han podido localizar usuarios para invalidar caché del bloque Gestión HEE: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+
+        foreach (array_unique($userids) as $userid) {
+            self::invalidate_block_cache_for_user((int)$userid);
+        }
+    }
 
 }

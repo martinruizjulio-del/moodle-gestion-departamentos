@@ -4,9 +4,6 @@ require_once(__DIR__ . '/../../config.php');
 use local_gestion_actividades\local\manager;
 
 require_login();
-$syscontext = context_system::instance();
-require_capability('local/gestion_actividades:manage', $syscontext);
-
 $id = optional_param('id', 0, PARAM_INT);
 $workshopid = required_param('workshopid', PARAM_INT);
 $editionid = optional_param('editionid', 0, PARAM_INT);
@@ -16,7 +13,7 @@ $workshop = manager::get_workshop($workshopid);
 $course = $DB->get_record('course', ['id' => $workshop->courseid], '*', MUST_EXIST);
 $coursecontext = context_course::instance($course->id);
 
-if (!manager::can_manage_workshop($course, (int)$USER->id)) {
+if (!manager::can_manage_workshop_instance((int)$workshop->id, (int)$USER->id)) {
     throw new required_capability_exception($coursecontext, 'moodle/course:update', 'nopermissions', '');
 }
 
@@ -65,6 +62,8 @@ $PAGE->set_title(get_string('editmaterial', 'local_gestion_actividades'));
 $PAGE->set_heading(format_string($course->fullname));
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshopid]), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al taller', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('editmaterial', 'local_gestion_actividades') . ': ' . format_string($workshop->name));
 echo html_writer::tag('p', get_string('materialupload_simple_help', 'local_gestion_actividades'), ['class' => 'alert alert-info']);
 
@@ -101,7 +100,7 @@ echo html_writer::empty_tag('br');
 
 echo html_writer::empty_tag('input', ['type' => 'submit', 'value' => get_string('savechanges'), 'class' => 'btn btn-primary mt-3']);
 echo ' ';
-echo html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshopid]), get_string('cancel'), ['class' => 'btn btn-secondary mt-3']);
+echo html_writer::link(new moodle_url('/local/gestion_actividades/teacher_view.php', ['id' => $workshopid]), 'Volver al taller', ['class' => 'btn btn-secondary mt-3']);
 echo html_writer::end_tag('form');
 
 if ($id) {

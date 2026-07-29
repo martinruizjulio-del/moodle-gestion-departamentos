@@ -6,7 +6,9 @@ use local_gestion_actividades\local\manager;
 
 require_login();
 $context = context_system::instance();
-require_capability('local/gestion_actividades:manage', $context);
+if (!\local_gestion_actividades\local\manager::can_manage_globally((int)$USER->id)) {
+    throw new required_capability_exception(context_system::instance(), 'local/gestion_actividades:manage', 'nopermissions', '');
+}
 
 $PAGE->set_context($context);
 $PAGE->set_url(new moodle_url('/local/gestion_actividades/users.php'));
@@ -20,6 +22,8 @@ if ($form->is_cancelled()) {
 }
 
 echo $OUTPUT->header();
+echo html_writer::div(html_writer::link(new moodle_url('/local/gestion_actividades/dashboard.php'), $OUTPUT->pix_icon('t/left', '', 'moodle', ['class' => 'iconsmall mr-1']) . ' Volver al panel', ['class' => 'btn btn-outline-secondary mb-3']), 'mb-2');
+
 echo $OUTPUT->heading(get_string('bulkcreateusers', 'local_gestion_actividades'));
 echo html_writer::link(new moodle_url('/local/gestion_actividades/index.php'), get_string('return', 'local_gestion_actividades'), ['class' => 'btn btn-secondary mb-3']);
 echo ' ' . html_writer::link(new moodle_url('/local/gestion_actividades/template.php', ['type' => 'users']), get_string('downloadusertemplate', 'local_gestion_actividades'), ['class' => 'btn btn-outline-secondary mb-3']);
@@ -62,4 +66,7 @@ if ($data = $form->get_data()) {
     $form->display();
 }
 
+if (function_exists('local_gestion_actividades_enable_interactive_tables')) {
+    local_gestion_actividades_enable_interactive_tables();
+}
 echo $OUTPUT->footer();
